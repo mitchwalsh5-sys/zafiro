@@ -92,7 +92,7 @@ dependencies {
     implementation(project(":libs:logging"))
     implementation(project(":business:api"))
     implementation(project(":business:agent"))
-    implementation(project(":libs:libterm:libterm-runtime"))
+    implementation(project(":libs:libterm-runtime"))
     implementation(project(":remote-view"))
 
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
