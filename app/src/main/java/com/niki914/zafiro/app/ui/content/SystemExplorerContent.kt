@@ -31,7 +31,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.niki914.libterm.runtime.LibTerm
+import com.niki914.libterm.runtime.TermResult
 import com.niki914.uikit.infra.liquidScreenTopPadding
+import com.niki914.zafiro.business.permission.Permission
+import com.niki914.zafiro.business.permission.PermissionManager
+import com.niki914.zafiro.business.permission.PermissionState
+import com.niki914.zafiro.service.requireService
 import kotlinx.coroutines.delay
 import java.util.Locale
 
@@ -49,6 +55,21 @@ private data class SystemSnapshot(
     val uptime: String,
 )
 
+private data class ShizukuSnapshot(
+    val status: String = "Checking…",
+    val identity: String = "—",
+    val peakRefreshRate: String = "—",
+    val minRefreshRate: String = "—",
+    val processes: List<ProcessSnapshot> = emptyList(),
+)
+
+private data class ProcessSnapshot(
+    val name: String,
+    val pid: Int,
+    val rssKb: Long,
+    val user: String,
+)
+
 private data class MetricRow(
     val label: String,
     val value: String,
@@ -58,11 +79,19 @@ private data class MetricRow(
 fun SystemExplorerContent() {
     val context = LocalContext.current
     var snapshot by remember { mutableStateOf(readSystemSnapshot(context)) }
+    var shizuku by remember { mutableStateOf(ShizukuSnapshot()) }
 
     LaunchedEffect(context) {
         while (true) {
             snapshot = readSystemSnapshot(context)
             delay(2_000L)
+        }
+    }
+
+    LaunchedEffect(context) {
+        while (true) {
+            shizuku = readShizukuSnapshot(context)
+            delay(4_000L)
         }
     }
 
@@ -86,6 +115,12 @@ fun SystemExplorerContent() {
             MetricRow("Battery", snapshot.battery),
             MetricRow("Temperature", snapshot.batteryTemp),
         ),
+        "SHIZUKU" to listOf(
+            MetricRow("Status", shizuku.status),
+            MetricRow("Identity", shizuku.identity),
+            MetricRow("Peak refresh setting", shizuku.peakRefreshRate),
+            MetricRow("Minimum refresh setting", shizuku.minRefreshRate),
+        ),
     )
 
     LazyColumn(
@@ -104,7 +139,7 @@ fun SystemExplorerContent() {
                     style = MaterialTheme.typography.headlineMedium,
                 )
                 Text(
-                    text = "Live read-only diagnostics. Values refresh every two seconds.",
+                    text = "Live Android + Shizuku diagnostics. No system settings are changed here.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -124,6 +159,30 @@ fun SystemExplorerContent() {
                 MetricCard(row)
             }
         }
+
+        item {
+            Text(
+                text = "TOP RAM PROCESSES",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+            )
+        }
+
+        if (shizuku.processes.isEmpty()) {
+            item {
+                MetricCard(
+                    MetricRow(
+                        label = "Processes",
+                        value = if (shizuku.status == "Granted") "No data" else "Shizuku required",
+                    )
+                )
+            }
+        } else {
+            items(shizuku.processes, key = { it.pid }) { process ->
+                ProcessCard(process)
+            }
+        }
     }
 }
 
@@ -139,6 +198,7 @@ private fun MetricCard(row: MetricRow) {
             Text(
                 text = row.label,
                 style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f),
             )
             Text(
                 text = row.value,
@@ -147,6 +207,118 @@ private fun MetricCard(row: MetricRow) {
             )
         }
     }
+}
+
+@Composable
+private fun ProcessCard(process: ProcessSnapshot) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = process.name,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Text(
+                text = "${formatMemoryKb(process.rssKb)} · PID ${process.pid} · ${process.user}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private suspend fun readShizukuSnapshot(context: Context): ShizukuSnapshot {
+    val permissionManager = requireService<PermissionManager>()
+    val permissionState = permissionManager.status(Permission.SHIZUKU)
+    if (permissionState != PermissionState.GRANTED) {
+        return ShizukuSnapshot(status = permissionState.toUiLabel())
+    }
+
+    val term = LibTerm.openShizukuTerm(context)
+    return try {
+        val identity = term.exec("id").stdoutOrNull()?.trim().orEmpty()
+        if (identity.isBlank()) {
+            return ShizukuSnapshot(status = "Granted", identity = "Shell unavailable")
+        }
+
+        val displayOutput = term.exec(
+            "printf 'peak='; settings get system peak_refresh_rate; " +
+                "printf 'min='; settings get system min_refresh_rate"
+        ).stdoutOrNull().orEmpty()
+
+        val processOutput = term.exec(
+            "ps -A -o USER,PID,PPID,RSS,NAME"
+        ).stdoutOrNull().orEmpty()
+
+        ShizukuSnapshot(
+            status = "Granted",
+            identity = identity.compactIdentity(),
+            peakRefreshRate = displayOutput.settingValue("peak") ?: "Unset",
+            minRefreshRate = displayOutput.settingValue("min") ?: "Unset",
+            processes = parseProcesses(processOutput)
+                .sortedByDescending { it.rssKb }
+                .take(12),
+        )
+    } catch (throwable: Throwable) {
+        ShizukuSnapshot(
+            status = "Granted · shell error",
+            identity = throwable.javaClass.simpleName,
+        )
+    } finally {
+        term.close()
+    }
+}
+
+private fun TermResult<com.niki914.libterm.runtime.CommandResult>.stdoutOrNull(): String? {
+    return when (this) {
+        is TermResult.Success -> value.stdout.toByteArray().decodeToString()
+        is TermResult.Failure -> null
+    }
+}
+
+private fun String.settingValue(key: String): String? {
+    return lineSequence()
+        .map { it.trim() }
+        .firstOrNull { it.startsWith("$key=") }
+        ?.substringAfter('=')
+        ?.trim()
+        ?.takeIf { it.isNotBlank() && it != "null" }
+}
+
+private fun String.compactIdentity(): String {
+    val uid = Regex("""uid=\d+\([^)]*\)""").find(this)?.value
+    val gid = Regex("""gid=\d+\([^)]*\)""").find(this)?.value
+    return listOfNotNull(uid, gid).joinToString(" · ").ifBlank { take(90) }
+}
+
+private fun parseProcesses(output: String): List<ProcessSnapshot> {
+    return output.lineSequence()
+        .drop(1)
+        .mapNotNull { line ->
+            val parts = line.trim().split(Regex("""\s+"""), limit = 5)
+            if (parts.size < 5) return@mapNotNull null
+            val pid = parts[1].toIntOrNull() ?: return@mapNotNull null
+            val rss = parts[3].toLongOrNull() ?: return@mapNotNull null
+            ProcessSnapshot(
+                user = parts[0],
+                pid = pid,
+                rssKb = rss,
+                name = parts[4],
+            )
+        }
+        .toList()
+}
+
+private fun PermissionState.toUiLabel(): String = when (this) {
+    PermissionState.GRANTED -> "Granted"
+    PermissionState.DENIED_BY_USER -> "Permission denied"
+    PermissionState.UNAVAILABLE -> "Not running"
+    PermissionState.FAILED -> "Error"
+    PermissionState.UNKNOWN -> "Unknown"
 }
 
 private fun readSystemSnapshot(context: Context): SystemSnapshot {
@@ -221,6 +393,14 @@ private fun readSystemSnapshot(context: Context): SystemSnapshot {
 private fun formatBytes(bytes: Long): String {
     val gib = bytes / (1024.0 * 1024.0 * 1024.0)
     return String.format(Locale.US, "%.1f GB", gib)
+}
+
+private fun formatMemoryKb(kb: Long): String {
+    return if (kb >= 1024L * 1024L) {
+        String.format(Locale.US, "%.2f GB", kb / (1024.0 * 1024.0))
+    } else {
+        String.format(Locale.US, "%.0f MB", kb / 1024.0)
+    }
 }
 
 private fun formatDuration(milliseconds: Long): String {
