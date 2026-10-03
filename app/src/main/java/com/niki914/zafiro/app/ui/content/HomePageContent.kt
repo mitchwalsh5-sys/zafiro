@@ -152,6 +152,7 @@ fun HomePageContent(
     onConversationSelectionConsumed: (String) -> Unit,
     onActiveConversationChanged: (String?, String?) -> Unit,
     onOpenHistory: () -> Unit,
+    onOpenSystemExplorer: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val viewModel = pageViewModel<HomeChatViewModel>()
@@ -160,6 +161,7 @@ fun HomePageContent(
     val historyContentDescription = stringResource(R.string.ui_home_history_content_description)
     val latestViewModel by rememberUpdatedState(viewModel)
     val latestOnOpenHistory by rememberUpdatedState(onOpenHistory)
+    val latestOnOpenSystemExplorer by rememberUpdatedState(onOpenSystemExplorer)
     val latestOnOpenSettings by rememberUpdatedState(onOpenSettings)
     val latestOnConversationSelectionConsumed by rememberUpdatedState(
         onConversationSelectionConsumed
@@ -297,6 +299,11 @@ fun HomePageContent(
                     onClick = {
                         latestViewModel.sendIntent(HomeChatIntent.NewConversation)
                     },
+                ),
+                PageChromeMenuItem(
+                    key = "system_explorer",
+                    title = "System Explorer",
+                    onClick = { latestOnOpenSystemExplorer() },
                 ),
                 PageChromeMenuItem(
                     key = "settings",
