@@ -104,6 +104,7 @@ import com.niki914.uikit.infra.component.OptionSheet
 import com.niki914.uikit.infra.liquidScreenTopPadding
 import com.niki914.uikit.infra.nav.pageViewModel
 import com.niki914.zafiro.app.R
+import com.niki914.zafiro.app.migration.ZafiroSetupMigration
 import com.niki914.zafiro.app.ui.PageChromeContribution
 import com.niki914.zafiro.app.ui.PageChromeMenuItem
 import com.niki914.zafiro.app.ui.RegisterPageChrome
@@ -168,6 +169,36 @@ fun HomePageContent(
     )
     val latestOnActiveConversationChanged by rememberUpdatedState(onActiveConversationChanged)
     val uiState by viewModel.uiStateFlow.collectAsState()
+    val migrationContext = LocalContext.current
+    val migrationScope = rememberCoroutineScope()
+    val importSetupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            migrationScope.launch {
+                val message = runCatching {
+                    ZafiroSetupMigration.importBundle(migrationContext, uri).message
+                }.getOrElse { throwable ->
+                    "Import failed: ${throwable.message ?: "unknown error"}"
+                }
+                Toast.makeText(migrationContext, message, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val exportSetupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        if (uri != null) {
+            migrationScope.launch {
+                val message = runCatching {
+                    ZafiroSetupMigration.exportBundle(migrationContext, uri).message
+                }.getOrElse { throwable ->
+                    "Export failed: ${throwable.message ?: "unknown error"}"
+                }
+                Toast.makeText(migrationContext, message, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     // 附件失败提示：一次性 effect（不占状态）。
     // 三条文案按原因分（D22）：解析不出路径 / 没拿到全局文件访问权 / 读不到文件。
@@ -304,6 +335,16 @@ fun HomePageContent(
                     key = "system_explorer",
                     title = "System Explorer",
                     onClick = { latestOnOpenSystemExplorer() },
+                ),
+                PageChromeMenuItem(
+                    key = "import_zafiro_setup",
+                    title = "Import Zafiro setup",
+                    onClick = { importSetupLauncher.launch(arrayOf("application/zip", "application/octet-stream")) },
+                ),
+                PageChromeMenuItem(
+                    key = "export_zafiro_setup",
+                    title = "Export setup",
+                    onClick = { exportSetupLauncher.launch("zafiro-control-setup.zip") },
                 ),
                 PageChromeMenuItem(
                     key = "settings",
