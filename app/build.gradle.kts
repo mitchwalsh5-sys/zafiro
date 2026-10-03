@@ -53,6 +53,9 @@ android {
             )
         }
         debug {
+            // Keep development builds installable beside the upstream Zafiro release.
+            applicationIdSuffix = ".control"
+            versionNameSuffix = "-control-dev"
             ndk {
                 abiFilters += "x86_64"   // 模拟器调试
             }
