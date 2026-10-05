@@ -34,6 +34,12 @@ android {
     }
 
     signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file(".github/zafiro-control-debug.jks")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("release") {
             storeFile = file(project.property("RELEASE_STORE_FILE") as String)
             storePassword = project.property("RELEASE_STORE_PASSWORD") as String
@@ -53,6 +59,7 @@ android {
             )
         }
         debug {
+            signingConfig = signingConfigs.getByName("debug")
             // Keep development builds installable beside the upstream Zafiro release.
             applicationIdSuffix = ".control"
             versionNameSuffix = "-control-dev"
