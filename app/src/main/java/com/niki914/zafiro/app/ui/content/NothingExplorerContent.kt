@@ -161,6 +161,10 @@ private suspend fun deepScan(context:android.content.Context):NothingDiscoverySt
         val command="""
             printf '__PACKAGES__\n'
             pm list packages
+            printf '__ACTIVITIES__\n'
+            for p in $(pm list packages | cut -d: -f2 | grep -Ei 'nothing|glyph|essential'); do
+              cmd package query-activities --brief --components -a android.intent.action.MAIN -p "$p" 2>/dev/null
+            done
             printf '__SERVICES__\n'
             service list
             printf '__OVERLAYS__\n'
@@ -199,7 +203,7 @@ private fun parseDiscovery(output:String):List<DiscoveryItem> {
     output.lineSequence().forEach { raw ->
         val line=raw.trim()
         when(line) {
-            "__PACKAGES__","__SERVICES__","__OVERLAYS__","__PROPS__",
+            "__PACKAGES__","__ACTIVITIES__","__SERVICES__","__OVERLAYS__","__PROPS__",
             "__GLOBAL__","__SYSTEM__","__SECURE__","__DEVICE_CONFIG__" -> {
                 section=line
                 return@forEach
@@ -211,6 +215,9 @@ private fun parseDiscovery(output:String):List<DiscoveryItem> {
             "__PACKAGES__" -> {
                 val pkg=line.removePrefix("package:").trim()
                 if(isNothingish(pkg)) result+=DiscoveryItem("PACKAGE",pkg)
+            }
+            "__ACTIVITIES__" -> {
+                if(line.contains("/") && isNothingish(line)) result+=DiscoveryItem("ACTIVITY",line)
             }
             "__SERVICES__" -> if(isNothingish(line)) result+=DiscoveryItem("SERVICE",line)
             "__OVERLAYS__" -> {
@@ -245,7 +252,7 @@ private fun parseDiscovery(output:String):List<DiscoveryItem> {
 }
 
 private fun typeOrder(type:String)=when(type){
-    "PACKAGE"->0;"SERVICE"->1;"OVERLAY"->2;"PROPERTY"->3;"SETTING"->4;"DEVICE CONFIG"->5;else->9
+    "PACKAGE"->0;"ACTIVITY"->1;"SERVICE"->2;"OVERLAY"->3;"PROPERTY"->4;"SETTING"->5;"DEVICE CONFIG"->6;else->9
 }
 
 private fun isNothingish(text:String):Boolean {
