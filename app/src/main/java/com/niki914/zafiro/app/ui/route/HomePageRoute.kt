@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import com.niki914.zafiro.app.ui.content.HomePageContent
 import com.niki914.zafiro.app.ui.nav.ConversationHistoryPage
 import com.niki914.zafiro.app.ui.nav.SettingsHomePage
+import com.niki914.zafiro.app.ui.nav.NothingExplorerPage
 import com.niki914.zafiro.app.ui.nav.SystemExplorerPage
 import com.niki914.zafiro.app.ui.nav.ZafiroPage
 
@@ -24,6 +25,9 @@ internal fun HomePageRoute(
         },
         onOpenSystemExplorer = {
             onPush(SystemExplorerPage)
+        },
+        onOpenNothingExplorer = {
+            onPush(NothingExplorerPage)
         },
         onOpenSettings = {
             onPush(SettingsHomePage)
