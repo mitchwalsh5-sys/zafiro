@@ -13,6 +13,12 @@ internal class LibTermShizukuShellUserService : ILibTermShizukuShellService.Stub
     private val nextSessionId = AtomicLong(0L)
     private val sessions = ConcurrentHashMap<Long, ShellSession>()
 
+    override fun destroy() {
+        sessions.values.toList().forEach(::closeSession)
+        sessions.clear()
+        System.exit(0)
+    }
+
     override fun openSession(cwd: String, callback: ILibTermShizukuShellCallback): Long {
         val sessionId = nextSessionId.incrementAndGet()
         val process = try {
