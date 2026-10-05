@@ -34,14 +34,19 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Install stable Zafiro Control debug key
+      - name: Install fixed Zafiro Control debug key
         run: |
-          mkdir -p "$HOME/.android"
-          base64 --decode .github/zafiro-control-debug.jks.b64 > "$HOME/.android/debug.keystore"
-          chmod 600 "$HOME/.android/debug.keystore"
+          base64 --decode .github/zafiro-control-debug.jks.b64 > .github/zafiro-control-debug.jks
+          chmod 600 .github/zafiro-control-debug.jks
 
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify APK signer
+        run: |
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/app-debug.apk
+          keytool -printcert -jarfile app/build/outputs/apk/debug/app-debug.apk | grep -E 'Owner:|SHA256:'
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
