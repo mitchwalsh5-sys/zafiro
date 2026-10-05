@@ -41,12 +41,20 @@ private data class NothingExplorerState(
     val all: List<NothingSettingEntry> = emptyList(),
 )
 
+private data class NothingSettingChange(
+    val namespace: String,
+    val key: String,
+    val before: String?,
+    val after: String?,
+)
+
 @Composable
 fun NothingExplorerContent() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf(NothingExplorerState()) }
     var query by remember { mutableStateOf("") }
+    var baseline by remember { mutableStateOf<List<NothingSettingEntry>?>(null) }
 
     fun refresh() {
         if (state.loading && state.all.isNotEmpty()) return
@@ -61,6 +69,12 @@ fun NothingExplorerContent() {
     }
 
     val trimmedQuery = query.trim()
+    val changes = remember(state.all, baseline) {
+        baseline?.let { diffSettings(it, state.all) }.orEmpty()
+    }
+    val changedKeys = remember(changes) {
+        changes.map { "${it.namespace}:${it.key}" }.toSet()
+    }
     val visible = remember(state.all, trimmedQuery) {
         if (trimmedQuery.isBlank()) {
             state.all.filter(::isNothingCandidate)
@@ -105,6 +119,49 @@ fun NothingExplorerContent() {
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = { baseline = state.all },
+                    enabled = !state.loading && state.all.isNotEmpty(),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (baseline == null) "Capture baseline" else "Replace baseline")
+                }
+                if (baseline != null) {
+                    Button(
+                        onClick = { baseline = null },
+                    ) {
+                        Text("Clear")
+                    }
+                }
+            }
+        }
+
+        if (baseline != null) {
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = if (changes.isEmpty()) "NO CHANGES" else "${changes.size} CHANGED SETTINGS",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            text = "Capture a baseline, change something in Nothing OS, then tap Refresh. Modified, added and removed settings are highlighted.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
         }
 
         item {
@@ -166,13 +223,23 @@ fun NothingExplorerContent() {
             items = visible,
             key = { "${it.namespace}:${it.key}" },
         ) { entry ->
-            NothingSettingCard(entry)
+            NothingSettingCard(
+                entry = entry,
+                changed = "${entry.namespace}:${entry.key}" in changedKeys,
+                change = changes.firstOrNull {
+                    it.namespace == entry.namespace && it.key == entry.key
+                },
+            )
         }
     }
 }
 
 @Composable
-private fun NothingSettingCard(entry: NothingSettingEntry) {
+private fun NothingSettingCard(
+    entry: NothingSettingEntry,
+    changed: Boolean,
+    change: NothingSettingChange?,
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
@@ -191,11 +258,31 @@ private fun NothingSettingCard(entry: NothingSettingEntry) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontFamily = FontFamily.Monospace,
             )
-            Text(
-                text = entry.namespace.uppercase(),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "${entry.namespace.uppercase()} · ${classifyNothingSetting(entry)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                if (changed) {
+                    Text(
+                        text = "CHANGED",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+            if (change != null) {
+                Text(
+                    text = "${change.before ?: "(missing)"} → ${change.after ?: "(removed)"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
         }
     }
 }
@@ -280,3 +367,44 @@ private val NOTHING_KEYWORDS = listOf(
     "always_on",
     "flip_to",
 )
+
+
+private fun diffSettings(
+    before: List<NothingSettingEntry>,
+    after: List<NothingSettingEntry>,
+): List<NothingSettingChange> {
+    fun keyOf(entry: NothingSettingEntry) = "${entry.namespace}:${entry.key}"
+    val beforeMap = before.associateBy(::keyOf)
+    val afterMap = after.associateBy(::keyOf)
+
+    return (beforeMap.keys + afterMap.keys)
+        .asSequence()
+        .distinct()
+        .mapNotNull { id ->
+            val old = beforeMap[id]
+            val new = afterMap[id]
+            if (old?.value == new?.value) return@mapNotNull null
+            NothingSettingChange(
+                namespace = new?.namespace ?: old!!.namespace,
+                key = new?.key ?: old!!.key,
+                before = old?.value,
+                after = new?.value,
+            )
+        }
+        .sortedWith(compareBy<NothingSettingChange> { it.namespace }.thenBy { it.key })
+        .toList()
+}
+
+private fun classifyNothingSetting(entry: NothingSettingEntry): String {
+    val text = "${entry.key} ${entry.value}".lowercase()
+    return when {
+        listOf("glyph", "led", "light").any(text::contains) -> "Glyph"
+        listOf("aod", "always_on", "ambient", "lock_screen").any(text::contains) -> "Display"
+        listOf("refresh", "fps", "hz", "display").any(text::contains) -> "Display"
+        listOf("battery", "charge", "power").any(text::contains) -> "Power"
+        listOf("essential", "space").any(text::contains) -> "Essential"
+        listOf("gesture", "flip_to", "motion").any(text::contains) -> "Gestures"
+        listOf("sound", "audio", "volume").any(text::contains) -> "Audio"
+        else -> "Vendor"
+    }
+}
