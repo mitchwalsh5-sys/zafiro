@@ -111,6 +111,18 @@ fun NothingExplorerContent() {
                 placeholder={Text("glyph, aod, essential, display…")}
             )
         }
+        actionMessage?.let { message ->
+            item {
+                Card(modifier=Modifier.fillMaxWidth()) {
+                    Text(
+                        message,
+                        style=MaterialTheme.typography.bodySmall,
+                        color=MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier=Modifier.padding(16.dp)
+                    )
+                }
+            }
+        }
 
         state.error?.let { error ->
             item {
@@ -129,13 +141,22 @@ fun NothingExplorerContent() {
         }
 
         items(visible,key={"${it.type}:${it.name}:${it.detail}"}) { item ->
-            DiscoveryCard(item)
+            DiscoveryCard(
+                item=item,
+                onLaunch=if(item.type=="ACTIVITY") {
+                    {
+                        scope.launch {
+                            actionMessage=launchActivity(context,item.name)
+                        }
+                    }
+                } else null
+            )
         }
     }
 }
 
 @Composable
-private fun DiscoveryCard(item:DiscoveryItem) {
+private fun DiscoveryCard(item:DiscoveryItem,onLaunch:(()->Unit)?=null) {
     Card(modifier=Modifier.fillMaxWidth()) {
         Column(
             modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=14.dp),
@@ -151,6 +172,11 @@ private fun DiscoveryCard(item:DiscoveryItem) {
                 )
             }
             Text(item.type,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.primary)
+            if(onLaunch!=null) {
+                Button(onClick=onLaunch,modifier=Modifier.fillMaxWidth()) {
+                    Text("Launch")
+                }
+            }
         }
     }
 }
@@ -264,3 +290,23 @@ private val NOTHING_SURFACE_KEYWORDS=listOf(
     "com.nothing","nothing","nt_","nt.","glyph","essential",
     "flip_to","aod","always_on","ambient_display"
 )
+
+private suspend fun launchActivity(
+    context:android.content.Context,
+    component:String
+):String {
+    val term=LibTerm.openShizukuTerm(context)
+    return try {
+        when(val result=term.exec("am start -n \"$component\"",timeoutMillis=10_000L)) {
+            is TermResult.Success -> {
+                val out=result.value.stdout.toByteArray().decodeToString().trim()
+                "Launch requested: $component" + if(out.isBlank()) "" else "\n$out"
+            }
+            is TermResult.Failure -> "Launch failed: $component\n${result.failure}"
+        }
+    } catch(t:Throwable) {
+        "Launch failed: $component\n${t.message ?: t.javaClass.simpleName}"
+    } finally {
+        term.close()
+    }
+}
