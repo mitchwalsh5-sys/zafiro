@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -27,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -39,6 +41,7 @@ import com.niki914.zafiro.business.permission.PermissionManager
 import com.niki914.zafiro.business.permission.PermissionState
 import com.niki914.zafiro.service.requireService
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 private data class SystemSnapshot(
@@ -80,6 +83,8 @@ fun SystemExplorerContent() {
     val context = LocalContext.current
     var snapshot by remember { mutableStateOf(readSystemSnapshot(context)) }
     var shizuku by remember { mutableStateOf(ShizukuSnapshot()) }
+    var requestingShizuku by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(context) {
         while (true) {
@@ -157,6 +162,28 @@ fun SystemExplorerContent() {
             }
             items(rows) { row ->
                 MetricCard(row)
+            }
+
+            if (title == "SHIZUKU" && shizuku.status != "Granted") {
+                item {
+                    Button(
+                        onClick = {
+                            if (!requestingShizuku) {
+                                requestingShizuku = true
+                                scope.launch {
+                                    val manager = requireService<PermissionManager>()
+                                    manager.request(Permission.SHIZUKU)
+                                    shizuku = readShizukuSnapshot(context)
+                                    requestingShizuku = false
+                                }
+                            }
+                        },
+                        enabled = !requestingShizuku,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (requestingShizuku) "Requesting Shizuku…" else "Grant Shizuku")
+                    }
+                }
             }
         }
 
