@@ -35,6 +35,7 @@ fun NothingExplorerContent() {
     val scope=rememberCoroutineScope()
     var state by remember { mutableStateOf(NothingDiscoveryState()) }
     var query by remember { mutableStateOf("") }
+    var actionMessage by remember { mutableStateOf<String?>(null) }
 
     fun scan() {
         if (state.loading) return
@@ -52,6 +53,7 @@ fun NothingExplorerContent() {
     }
 
     val packages=state.items.count{it.type=="PACKAGE"}
+    val activities=state.items.count{it.type=="ACTIVITY"}
     val services=state.items.count{it.type=="SERVICE"}
     val overlays=state.items.count{it.type=="OVERLAY"}
     val props=state.items.count{it.type=="PROPERTY"}
@@ -83,8 +85,9 @@ fun NothingExplorerContent() {
                     verticalArrangement=Arrangement.spacedBy(8.dp)
                 ) {
                     Text("DISCOVERY MAP",style=MaterialTheme.typography.titleMedium)
-                    Text("$packages packages · $services services · $overlays overlays")
-                    Text("$props properties · $settings settings · $configs device_config")
+                    Text("$packages packages · $activities activities · $services services")
+                    Text("$overlays overlays · $props properties")
+                    Text("$settings settings · $configs device_config")
                     Text(
                         if(state.loading) "Scanning vendor surface…" else "${state.items.size} Nothing-related findings",
                         style=MaterialTheme.typography.bodySmall,
