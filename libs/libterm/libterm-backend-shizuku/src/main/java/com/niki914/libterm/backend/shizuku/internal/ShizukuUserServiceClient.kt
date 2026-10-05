@@ -24,6 +24,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import rikka.shizuku.Shizuku
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -39,13 +40,14 @@ internal class ShizukuUserServiceClient(
     private val closed = AtomicBoolean(false)
     private val connectActive = AtomicBoolean(false)
     private val stateLock = Any()
+    private val userServiceTag = "$USER_SERVICE_TAG_PREFIX-${nextServiceId.incrementAndGet()}"
     private val userServiceArgs = Shizuku.UserServiceArgs(
         ComponentName(
             context.packageName,
             LibTermShizukuShellUserService::class.java.name,
         ),
     ).apply {
-        tag(USER_SERVICE_TAG)
+        tag(userServiceTag)
         version(USER_SERVICE_VERSION)
         daemon(false)
         debuggable(false)
@@ -325,8 +327,9 @@ internal class ShizukuUserServiceClient(
     }
 
     private companion object {
-        private const val USER_SERVICE_TAG = "libterm-shell"
+        private const val USER_SERVICE_TAG_PREFIX = "libterm-shell"
         private const val USER_SERVICE_VERSION = 2
+        private val nextServiceId = AtomicLong(0L)
         private const val OUTPUT_BUFFER_CAPACITY = 64
         private const val CONNECT_TIMEOUT_MILLIS = 15_000L
         private const val USER_SERVICE_START_FAILURE_MESSAGE = "Failed to start Shizuku shell"
