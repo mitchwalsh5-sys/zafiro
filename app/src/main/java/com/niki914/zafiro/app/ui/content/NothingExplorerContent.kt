@@ -86,7 +86,7 @@ fun NothingExplorerContent() {
                     Text("$packages packages · $services services · $overlays overlays")
                     Text("$props properties · $settings settings · $configs device_config")
                     Text(
-                        if(state.loading) "Scanning vendor surface…" else "\${state.items.size} Nothing-related findings",
+                        if(state.loading) "Scanning vendor surface…" else "${state.items.size} Nothing-related findings",
                         style=MaterialTheme.typography.bodySmall,
                         color=MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -125,7 +125,7 @@ fun NothingExplorerContent() {
             }
         }
 
-        items(visible,key={"\${it.type}:\${it.name}:\${it.detail}"}) { item ->
+        items(visible,key={"${it.type}:${it.name}:${it.detail}"}) { item ->
             DiscoveryCard(item)
         }
     }
@@ -177,14 +177,14 @@ private suspend fun deepScan(context:android.content.Context):NothingDiscoverySt
         val output=when(val result=term.exec(command,timeoutMillis=25_000L)) {
             is TermResult.Success -> result.value.stdout.toByteArray().decodeToString()
             is TermResult.Failure -> return NothingDiscoveryState(
-                loading=false,error="Shizuku shell failed: \${result.failure}"
+                loading=false,error="Shizuku shell failed: ${result.failure}"
             )
         }
         NothingDiscoveryState(loading=false,items=parseDiscovery(output))
     } catch(t:Throwable) {
         NothingDiscoveryState(
             loading=false,
-            error="Deep scan failed: \${t.message ?: t.javaClass.simpleName}"
+            error="Deep scan failed: ${t.message ?: t.javaClass.simpleName}"
         )
     } finally { term.close() }
 }
@@ -237,7 +237,7 @@ private fun parseDiscovery(output:String):List<DiscoveryItem> {
         }
     }
 
-    return result.distinctBy{"\${it.type}:\${it.name}:\${it.detail}"}
+    return result.distinctBy{"${it.type}:${it.name}:${it.detail}"}
         .sortedWith(compareBy<DiscoveryItem>{typeOrder(it.type)}.thenBy{it.name.lowercase()})
 }
 
