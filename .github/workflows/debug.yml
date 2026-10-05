@@ -34,6 +34,12 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Install stable Zafiro Control debug key
+        run: |
+          mkdir -p "$HOME/.android"
+          base64 --decode .github/zafiro-control-debug.jks.b64 > "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
