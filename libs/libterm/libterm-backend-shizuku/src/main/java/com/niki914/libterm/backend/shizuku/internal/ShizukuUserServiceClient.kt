@@ -45,6 +45,8 @@ internal class ShizukuUserServiceClient(
             LibTermShizukuShellUserService::class.java.name,
         ),
     ).apply {
+        tag(USER_SERVICE_TAG)
+        version(USER_SERVICE_VERSION)
         daemon(false)
         debuggable(false)
         processNameSuffix(ShizukuShellConstants.USER_SERVICE_PROCESS_SUFFIX)
@@ -323,6 +325,8 @@ internal class ShizukuUserServiceClient(
     }
 
     private companion object {
+        private const val USER_SERVICE_TAG = "libterm-shell"
+        private const val USER_SERVICE_VERSION = 2
         private const val OUTPUT_BUFFER_CAPACITY = 64
         private const val CONNECT_TIMEOUT_MILLIS = 15_000L
         private const val USER_SERVICE_START_FAILURE_MESSAGE = "Failed to start Shizuku shell"
