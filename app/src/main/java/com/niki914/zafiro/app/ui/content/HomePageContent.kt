@@ -154,6 +154,7 @@ fun HomePageContent(
     onActiveConversationChanged: (String?, String?) -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSystemExplorer: () -> Unit,
+    onOpenNothingExplorer: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val viewModel = pageViewModel<HomeChatViewModel>()
@@ -163,6 +164,7 @@ fun HomePageContent(
     val latestViewModel by rememberUpdatedState(viewModel)
     val latestOnOpenHistory by rememberUpdatedState(onOpenHistory)
     val latestOnOpenSystemExplorer by rememberUpdatedState(onOpenSystemExplorer)
+    val latestOnOpenNothingExplorer by rememberUpdatedState(onOpenNothingExplorer)
     val latestOnOpenSettings by rememberUpdatedState(onOpenSettings)
     val latestOnConversationSelectionConsumed by rememberUpdatedState(
         onConversationSelectionConsumed
@@ -335,6 +337,11 @@ fun HomePageContent(
                     key = "system_explorer",
                     title = "System Explorer",
                     onClick = { latestOnOpenSystemExplorer() },
+                ),
+                PageChromeMenuItem(
+                    key = "nothing_explorer",
+                    title = "Nothing Explorer",
+                    onClick = { latestOnOpenNothingExplorer() },
                 ),
                 PageChromeMenuItem(
                     key = "import_zafiro_setup",
