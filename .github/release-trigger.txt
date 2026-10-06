@@ -1,1 +1,1 @@
-Trigger clean feature-rich Zafiro Control build after full Nothing Explorer source replacement.
+Trigger first stable Zafiro Control release v14 after migration validation.
