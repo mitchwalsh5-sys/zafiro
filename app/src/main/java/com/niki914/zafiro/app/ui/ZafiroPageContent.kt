@@ -4,6 +4,8 @@ import androidx.compose.runtime.Composable
 import com.niki914.uikit.infra.nav.NavigationEntry
 import com.niki914.zafiro.app.ui.content.CustomPyToolDetailContent
 import com.niki914.zafiro.app.ui.content.CustomPyToolsSettingsContent
+import com.niki914.zafiro.app.ui.content.SystemExplorerContent
+import com.niki914.zafiro.app.ui.content.NothingExplorerContent
 import com.niki914.zafiro.app.ui.model.StartupAssistantUi
 import com.niki914.zafiro.app.ui.nav.BuiltinToolGroupDetailPage
 import com.niki914.zafiro.app.ui.nav.ConfigurePage
@@ -20,6 +22,8 @@ import com.niki914.zafiro.app.ui.nav.SavedConfigDetailPage
 import com.niki914.zafiro.app.ui.nav.SettingsDetailPage
 import com.niki914.zafiro.app.ui.nav.SettingsHomePage
 import com.niki914.zafiro.app.ui.nav.SettingsProviderPickPage
+import com.niki914.zafiro.app.ui.nav.SystemExplorerPage
+import com.niki914.zafiro.app.ui.nav.NothingExplorerPage
 import com.niki914.zafiro.app.ui.nav.SkillDetailPage
 import com.niki914.zafiro.app.ui.nav.StartupPage
 import com.niki914.zafiro.app.ui.nav.TakeoverRuleDetailPage
@@ -110,6 +114,10 @@ fun ZafiroPageContent(
             },
             onCurrentConversationDeleted = onCurrentConversationDeleted,
         )
+
+        SystemExplorerPage -> SystemExplorerContent()
+
+        NothingExplorerPage -> NothingExplorerContent()
 
         SettingsHomePage -> SettingsHomePageRoute(
             onPush = onPush,
