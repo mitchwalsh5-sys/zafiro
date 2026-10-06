@@ -67,20 +67,25 @@ jobs:
       - name: Resolve version name
         id: version
         run: |
-          VN=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"(.*)".*/\1/')
+          VN=$(python3 - <<'PY'
+          import json
+          with open("app/build/outputs/apk/release/output-metadata.json", "r", encoding="utf-8") as f:
+              print(json.load(f)["elements"][0]["versionName"])
+          PY
+          )
           echo "name=$VN" >> "$GITHUB_OUTPUT"
 
       - name: Stage APK
         run: |
           cp app/build/outputs/apk/release/app-release.apk \
-             "Zafiro-${{ steps.version.outputs.name }}.apk"
+             "Zafiro-Control-${{ steps.version.outputs.name }}.apk"
 
       - name: Upload APK artifact
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: Zafiro-${{ steps.version.outputs.name }}
-          path: Zafiro-*.apk
+          name: Zafiro-Control-${{ steps.version.outputs.name }}
+          path: Zafiro-Control-*.apk
           if-no-files-found: error
 
       - name: Create GitHub Release
