@@ -1,1 +1,1 @@
-Trigger feature-rich Zafiro Control build after Nothing Explorer shell fix.
+Trigger clean feature-rich Zafiro Control build after full Nothing Explorer source replacement.
