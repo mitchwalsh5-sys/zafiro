@@ -131,6 +131,24 @@ data object ConversationHistoryPage : ZafiroPage {
     override val rightAction: TopBarActionSpec? = null
 }
 
+data object SystemExplorerPage : ZafiroPage {
+    override val routeKey: String = "system-explorer"
+    override val titleSpec: PageTitleSpec = TextTitle("System Explorer")
+    override val leftAction: TopBarActionSpec =
+        TopBarActionSpec(Icons.AutoMirrored.Filled.ArrowBack)
+    override val rightAction: TopBarActionSpec? = null
+    override val titleMode: TitleBarMode = TitleBarMode.Collapsible
+}
+
+data object NothingExplorerPage : ZafiroPage {
+    override val routeKey: String = "nothing-explorer"
+    override val titleSpec: PageTitleSpec = TextTitle("Nothing Explorer")
+    override val leftAction: TopBarActionSpec =
+        TopBarActionSpec(Icons.AutoMirrored.Filled.ArrowBack)
+    override val rightAction: TopBarActionSpec? = null
+    override val titleMode: TitleBarMode = TitleBarMode.Collapsible
+}
+
 data object ThemeSettingsPage : ZafiroPage {
     override val routeKey: String = "theme-settings"
     override val titleSpec: PageTitleSpec = ResTitle(R.string.ui_settings_appearance)
