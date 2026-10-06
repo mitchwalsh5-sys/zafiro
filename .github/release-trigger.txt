@@ -1,1 +1,1 @@
-Trigger a release build after refreshing the repository signing secrets.
+Trigger Zafiro Control migration release build v12 with stable signing.
