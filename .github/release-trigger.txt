@@ -1,1 +1,1 @@
-Trigger Zafiro Control migration release build v12 with stable signing.
+Trigger feature-rich Zafiro Control migration build v13 with System Explorer and Nothing Explorer.
