@@ -1,1 +1,1 @@
-Trigger feature-rich Zafiro Control migration build v13 with System Explorer and Nothing Explorer.
+Trigger feature-rich Zafiro Control migration build v14 after Nothing Explorer repair.
