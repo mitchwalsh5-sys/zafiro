@@ -188,10 +188,7 @@ private suspend fun deepScan(context:android.content.Context):NothingDiscoverySt
             printf '__PACKAGES__\n'
             pm list packages
             printf '__ACTIVITIES__\n'
-            for p in $(pm list packages | cut -d: -f2 | grep -Ei 'nothing|glyph|essential'); do
-              cmd package query-activities --brief --components -a android.intent.action.MAIN -p "${'
-            done
-            printf '__SERVICES__\n'
+            cmd package query-activities --brief --components -a android.intent.action.MAIN 2>/dev/null | grep -Ei 'nothing|glyph|essential'\n            printf '__SERVICES__\n'
             service list
             printf '__OVERLAYS__\n'
             cmd overlay list 2>/dev/null
