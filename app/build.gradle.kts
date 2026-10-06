@@ -23,8 +23,8 @@ android {
         applicationId = "com.niki914.zafiro"
         minSdk = 26
         targetSdk = 34
-        versionName = "1.5.2"
-        versionCode = 13
+        versionName = "1.5.3"
+        versionCode = 14
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
@@ -44,11 +44,10 @@ android {
 
     buildTypes {
         release {
-            // One-off migration build: same canonical Control package and stable signing key,
-            // but debuggable so the previous debug build's private data can be restored.
+            // Canonical stable Zafiro Control build.
             applicationIdSuffix = ".control"
-            versionNameSuffix = "-control-migration"
-            isDebuggable = true
+            versionNameSuffix = "-control"
+            isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("release")
