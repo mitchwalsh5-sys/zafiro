@@ -15,12 +15,14 @@ import com.niki914.zafiro.api.model.AgentState
 import com.niki914.zafiro.api.model.ApprovalRequest
 import com.niki914.zafiro.api.model.TurnOutcome
 import com.niki914.zafiro.app.util.SilentLoggerRule
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.test.runTest
@@ -28,6 +30,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNotNull
 import org.junit.Before
 import org.junit.Rule
@@ -160,28 +163,30 @@ class ConversationPersisterTest {
     }
 
     @Test
-    fun trackActivity_bumpsUpdatedAtOnApprovalAndTurnEnd() = runTest {
+    fun trackActivity_persistsEachDeliveredLifecycleBoundary() = runTest {
         val initialTime = 1000L
         val sessionId = ConversationRepo.createConversation("session-1", "hi", now = initialTime)
-        val status = MutableStateFlow<AgentState>(AgentState.Idle())
         val touched = AtomicInteger()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
-        ConversationPersister.trackActivity(scope, status) {
-            touched.incrementAndGet()
-            sessionId
+        val finished = CompletableDeferred<Unit>()
+        // Deliver boundaries in order; StateFlow may conflate back-to-back synthetic states.
+        val status = flow {
+            emit(AgentState.Generating("a"))
+            emit(AgentState.WaitingApproval(approvalRequest()))
+            emit(AgentState.Idle(lastOutcome = TurnOutcome.Completed))
+            finished.complete(Unit)
         }
-
-        status.value = AgentState.Generating("a")
-        status.value = AgentState.WaitingApproval(approvalRequest())
-        status.value = AgentState.Idle(lastOutcome = TurnOutcome.Completed)
-
-        awaitUpdatedAtAbove(sessionId, initialTime)
-        repeat(50) {
-            if (touched.get() >= 2) return@repeat
-            delay(10)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            ConversationPersister.trackActivity(scope, status) {
+                touched.incrementAndGet()
+                sessionId
+            }
+            withContext(Dispatchers.Default) { withTimeout(5_000) { finished.await() } }
+            assertEquals(2, touched.get())
+            assertTrue(ConversationRepo.getConversation(sessionId)!!.summary.updatedAt > initialTime)
+        } finally {
+            scope.cancel()
         }
-        assertEquals(2, touched.get())
-        scope.cancel()
     }
 
     @Test

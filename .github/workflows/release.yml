@@ -82,18 +82,15 @@ jobs:
             -PRELEASE_KEY_PASSWORD="$SIGNING_PASSWORD"
 
       - name: Verify APK identity and established signing certificate
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh run download 37458270847 --repo "$GITHUB_REPOSITORY" --name Zafiro-Control-1.5.3-control --dir "$RUNNER_TEMP/control-baseline"
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
           AAPT=$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -1)
-          OLD_APK=$(find "$RUNNER_TEMP/control-baseline" -name '*.apk' -print -quit)
-          test -n "$OLD_APK"
-          "$APKSIGNER" verify --print-certs "$OLD_APK" > "$RUNNER_TEMP/baseline-cert.txt"
           "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/candidate-cert.txt"
-          diff <(grep 'certificate SHA-256 digest:' "$RUNNER_TEMP/baseline-cert.txt") <(grep 'certificate SHA-256 digest:' "$RUNNER_TEMP/candidate-cert.txt")
+          EXPECTED_CERT=$(tr -d '[:space:]' < .github/control-signing-cert.sha256)
+          ACTUAL_CERT=$(sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p' "$RUNNER_TEMP/candidate-cert.txt")
+          [[ "$EXPECTED_CERT" =~ ^[a-f0-9]{64}$ ]]
+          test "$ACTUAL_CERT" = "$EXPECTED_CERT"
           "$AAPT" dump badging app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/candidate-badging.txt"
           head -1 "$RUNNER_TEMP/candidate-badging.txt" > apk-verification.txt
           python3 - <<'PYCODE'

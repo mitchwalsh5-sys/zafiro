@@ -51,6 +51,7 @@ class TurnNotificationManagerTest {
 
         TurnNotificationManager.init(context as Application)
         XRepo.installStoreForTest(FakeDomainSettingsStore())
+        XRepo.init(context)
         installService<NotificationChannelManager>(fakeChannelManager)
         installService<ApplicationService>(fakeAppService)
         TurnNotificationManager.resetForTest()
@@ -59,6 +60,7 @@ class TurnNotificationManagerTest {
     @After
     fun tearDown() {
         TurnNotificationManager.resetForTest()
+        XRepo.resetForTest()
         ServiceRegistry.clearForTest()
     }
 
