@@ -17,7 +17,7 @@ import com.niki914.zafiro.app.getInstalledPackageVersion
 import com.niki914.zafiro.mod.HookLocalSettings
 import com.niki914.zafiro.mod.feat.BaseConfigProvider
 import com.niki914.zafiro.mod.feat.hyper.XiaoaiChatHook
-import com.niki914.zafiro.mod.feat.oppo.BreenoChatHook
+import com.niki914.zafiro.mod.feat.oppo.BreenoHook
 import com.niki914.zafiro.repo.XIpcDomainSettingsStore
 import com.niki914.zafiro.repo.XRepo
 import com.niki914.zafiro.runtime.client.AgentRuntimeClient
@@ -71,7 +71,10 @@ class Entrance : IXposed() {
                     BaseConfigProvider.config = nestedConfig
                     onSettingsFetched(params, client)
                 } else {
-                    Logger.w(LOG_TAG, "no nested config object found for package=${params.packageName}")
+                    Logger.w(
+                        LOG_TAG,
+                        "no nested config object found for package=${params.packageName}"
+                    )
                 }
             }
         }
@@ -121,18 +124,22 @@ class Entrance : IXposed() {
             120803L -> R.raw.com_heytap_speechassist_120803_config
             120906L -> R.raw.com_heytap_speechassist_120906_config
             120909L -> R.raw.com_heytap_speechassist_120909_config
+            130302L -> R.raw.com_heytap_speechassist_130302_config
             else -> null
         }
+
         "com.miui.voiceassist" -> when (versionCode) {
             507013003L -> R.raw.com_miui_voiceassist_507013003_config
             else -> null
         }
+
         else -> null
     }
 
     private fun readVersions(context: Context, rawId: Int): List<Long>? {
         return try {
-            val text = context.resources.openRawResource(rawId).bufferedReader().use { it.readText() }
+            val text =
+                context.resources.openRawResource(rawId).bufferedReader().use { it.readText() }
             Json.parseToJsonElement(text).jsonArray.mapNotNull { it.jsonPrimitive.longOrNull }
         } catch (e: Exception) {
             Logger.w(LOG_TAG, "failed to read versions from raw=$rawId", e)
@@ -142,7 +149,8 @@ class Entrance : IXposed() {
 
     private fun readConfig(context: Context, rawId: Int): JsonObject? {
         return try {
-            val text = context.resources.openRawResource(rawId).bufferedReader().use { it.readText() }
+            val text =
+                context.resources.openRawResource(rawId).bufferedReader().use { it.readText() }
             Json.parseToJsonElement(text).jsonObject
         } catch (e: Exception) {
             Logger.w(LOG_TAG, "failed to read config from raw=$rawId", e)
@@ -163,7 +171,7 @@ class Entrance : IXposed() {
         // 根据 targetPkg 进行映射和 Hook 路由
         val hostApp = HostApp.fromPackageName(params.packageName)
         val hookInstance: Hook? = when (hostApp) {
-            HostApp.Breeno -> BreenoChatHook(scope, client)
+            HostApp.Breeno -> BreenoHook(scope, client)
             HostApp.XiaoAi -> XiaoaiChatHook(scope, client)
             else -> null
         }

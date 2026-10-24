@@ -10,13 +10,15 @@ import com.niki914.zafiro.app.ui.nav.ZafiroPage
 
 @Composable
 internal fun HomePageRoute(
+    isCurrentPage: Boolean = true,
     onPush: (ZafiroPage) -> Unit,
     onPushFromLeft: (ZafiroPage) -> Unit,
     selectedConversationId: String?,
     onConversationSelectionConsumed: (String) -> Unit,
-    onActiveConversationChanged: (String?, String?) -> Unit,
+    onActiveConversationChanged: (String?) -> Unit,
 ) {
     HomePageContent(
+        isCurrentPage = isCurrentPage,
         selectedConversationId = selectedConversationId,
         onConversationSelectionConsumed = onConversationSelectionConsumed,
         onActiveConversationChanged = onActiveConversationChanged,

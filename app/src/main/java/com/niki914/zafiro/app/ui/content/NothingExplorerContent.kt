@@ -21,6 +21,13 @@ import com.niki914.libterm.runtime.LibTerm
 import com.niki914.libterm.runtime.TermResult
 import com.niki914.uikit.infra.liquidScreenTopPadding
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import com.niki914.zafiro.business.permission.Permission
+import com.niki914.zafiro.business.permission.PermissionManager
+import com.niki914.zafiro.business.permission.PermissionState
+import com.niki914.zafiro.service.requireService
 
 private data class DiscoveryItem(val type:String,val name:String,val detail:String="")
 private data class NothingDiscoveryState(
@@ -182,17 +189,20 @@ private fun DiscoveryCard(item:DiscoveryItem,onLaunch:(()->Unit)?=null) {
 }
 
 private suspend fun deepScan(context:android.content.Context):NothingDiscoveryState {
+    if (requireService<PermissionManager>().status(Permission.SHIZUKU) != PermissionState.GRANTED) {
+        return NothingDiscoveryState(loading=false,error="Grant Shizuku in System Explorer before scanning.")
+    }
     val term=LibTerm.openShizukuTerm(context)
     return try {
         val command="""
             printf '__PACKAGES__\n'
             pm list packages
             printf '__ACTIVITIES__\n'
-            cmd package query-activities --brief --components -a android.intent.action.MAIN 2>/dev/null | grep -Ei 'nothing|glyph|essential'
+            cmd package query-activities --brief --components -a android.intent.action.MAIN | grep -Ei 'nothing|glyph|essential'
             printf '__SERVICES__\n'
             service list
             printf '__OVERLAYS__\n'
-            cmd overlay list 2>/dev/null
+            cmd overlay list
             printf '__PROPS__\n'
             getprop
             printf '__GLOBAL__\n'
@@ -202,22 +212,29 @@ private suspend fun deepScan(context:android.content.Context):NothingDiscoverySt
             printf '__SECURE__\n'
             settings list secure
             printf '__DEVICE_CONFIG__\n'
-            device_config list 2>/dev/null
+            device_config list
         """.trimIndent()
 
+        var scanWarning: String? = null
         val output=when(val result=term.exec(command,timeoutMillis=25_000L)) {
-            is TermResult.Success -> result.value.stdout.toByteArray().decodeToString()
+            is TermResult.Success -> {
+                check(!result.value.timedOut) { "Scan timed out" }
+                scanWarning = result.value.stderr.toByteArray().decodeToString().trim()
+                    .takeIf { it.isNotEmpty() }?.take(600)
+                result.value.stdout.toByteArray().decodeToString()
+            }
             is TermResult.Failure -> return NothingDiscoveryState(
                 loading=false,error="Shizuku shell failed: ${result.failure}"
             )
         }
-        NothingDiscoveryState(loading=false,items=parseDiscovery(output))
-    } catch(t:Throwable) {
+        NothingDiscoveryState(loading=false,items=parseDiscovery(output),error=scanWarning)
+    } catch(t:Exception) {
+        if (t is CancellationException) throw t
         NothingDiscoveryState(
             loading=false,
             error="Deep scan failed: ${t.message ?: t.javaClass.simpleName}"
         )
-    } finally { term.close() }
+    } finally { withContext(NonCancellable) { term.close() } }
 }
 
 private fun parseDiscovery(output:String):List<DiscoveryItem> {
@@ -293,18 +310,23 @@ private suspend fun launchActivity(
     context:android.content.Context,
     component:String
 ):String {
+    if (!Regex("[A-Za-z0-9_.$]+/[A-Za-z0-9_.$]+").matches(component)) return "Invalid activity component"
     val term=LibTerm.openShizukuTerm(context)
     return try {
         when(val result=term.exec("am start -n \"$component\"",timeoutMillis=10_000L)) {
             is TermResult.Success -> {
                 val out=result.value.stdout.toByteArray().decodeToString().trim()
-                "Launch requested: $component" + if(out.isBlank()) "" else "\n$out"
+                val err=result.value.stderr.toByteArray().decodeToString().trim()
+                if (result.value.timedOut || result.value.exitCode != 0 || err.isNotBlank()) {
+                    "Launch failed: $component\n$err\n$out"
+                } else "Launch requested: $component" + if(out.isBlank()) "" else "\n$out"
             }
             is TermResult.Failure -> "Launch failed: $component\n${result.failure}"
         }
-    } catch(t:Throwable) {
+    } catch(t:Exception) {
+        if (t is CancellationException) throw t
         "Launch failed: $component\n${t.message ?: t.javaClass.simpleName}"
     } finally {
-        term.close()
+        withContext(NonCancellable) { term.close() }
     }
 }

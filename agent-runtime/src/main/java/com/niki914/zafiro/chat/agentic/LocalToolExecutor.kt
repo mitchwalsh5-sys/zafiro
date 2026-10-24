@@ -1,10 +1,10 @@
 package com.niki914.zafiro.chat.agentic
 
 import com.niki914.logging.Logger
-import com.niki914.okia.message.ContentBlock
 import com.niki914.okia.message.ToolCallOutcome
 import com.niki914.okia.tooling.ToolCallContext
 import com.niki914.okia.tooling.ToolExecutor
+import com.niki914.zafiro.api.AgentControl
 import com.niki914.zafiro.chat.LocalTool
 import com.niki914.zafiro.chat.ResolvedTools
 import com.niki914.zafiro.chat.agentic.buildin.BuiltinToolExecutor
@@ -40,6 +40,8 @@ class LocalToolExecutor(
     private val currentTools: () -> ResolvedTools?,
     private val inlineCustomPyTools: MutableMap<String, LocalTool.Py> = mutableMapOf(),
     private val onCustomPyToolWritten: suspend (LocalTool.Py) -> Unit = {},
+    private val tenantId: String = "",
+    private val agentControlProvider: (() -> AgentControl?)? = null,
 ) : ToolExecutor {
 
     private companion object {
@@ -49,7 +51,19 @@ class LocalToolExecutor(
     }
 
     override suspend fun execute(call: ToolCallContext): ToolCallOutcome {
-        val raw = executeLocal(name = call.name, argumentsJson = call.argumentsJson)
+        val control = agentControlProvider?.invoke()
+        val context = if (tenantId.isNotBlank() || control != null) {
+            AgentTenantContext(tenantId = tenantId, agentControl = control)
+        } else {
+            null
+        }
+        val raw = if (context != null) {
+            kotlinx.coroutines.withContext(context) {
+                executeLocal(name = call.name, argumentsJson = call.argumentsJson)
+            }
+        } else {
+            executeLocal(name = call.name, argumentsJson = call.argumentsJson)
+        }
         if (call.name == PY_META_TOOLS_NAME) {
             registerInlinePyIfWritten(call, raw)
         }
@@ -160,8 +174,11 @@ class LocalToolExecutor(
         val imageObj = json["image"] as? JsonObject
             ?: (json["data"] as? JsonObject)?.get("image") as? JsonObject
             ?: return emptyList()
-        val path = (imageObj["path"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull ?: return emptyList()
-        val mimeType = (imageObj["mime_type"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull ?: "image/jpeg"
+        val path = (imageObj["path"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+            ?: return emptyList()
+        val mimeType =
+            (imageObj["mime_type"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+                ?: "image/jpeg"
         return listOf(com.niki914.okia.message.ContentBlock.Image(path, mimeType))
     }
 

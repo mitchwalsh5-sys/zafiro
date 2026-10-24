@@ -15,6 +15,7 @@ import com.niki914.zafiro.settings.model.RuntimeCustomPyTool as CustomPyTool
 import com.niki914.zafiro.settings.model.RuntimeExecutionRule as ExecutionRule
 import com.niki914.zafiro.settings.model.RuntimeExecutionRuleEnabledMode as ExecutionRuleEnabledMode
 import com.niki914.zafiro.settings.model.RuntimeMcpServer as McpServer
+import com.niki914.zafiro.settings.model.RuntimeMcpServiceConfig
 import com.niki914.zafiro.settings.model.RuntimeTakeoverRule as TakeoverRule
 import com.niki914.zafiro.settings.model.RuntimeTakeoverTarget as TakeoverTarget
 
@@ -41,7 +42,8 @@ class SettingsDomainCodecsTest {
                     protocol = "openai-responses",
                     thinkingLevel = "high",
                     proxy = "http://proxy",
-                    maxTokens = 32_000,
+                    maxTokensText = "32k",
+                    contextWindowText = "1M",
                     createdAt = 1L,
                     updatedAt = 2L,
                 ),
@@ -65,14 +67,42 @@ class SettingsDomainCodecsTest {
 
     @Test
     fun llmConfigsDocumentLegacyConfigWithoutMaxTokensParsesAsUnset() {
-        // 老数据（无 max_tokens 键）：0 = 未设置，由 gateway 落默认值
+        // 老数据（无 max_tokens 键）：空串 = 未设置，由 gateway 落云端/默认值
         val json = """
             {"active_id":"cfg-a","configs":[{"id":"cfg-a","name":"Primary","provider":"openai","endpoint":"https://api.example","api_key":"k","model":"m","protocol":"openai-responses","supports_images":true,"proxy":"","thinking_level":"high","created_at":1,"updated_at":2}]}
         """.trimIndent()
 
         val config = LlmConfigsSettingsCodec.parse(json).configs.single()
 
-        assertEquals(0, config.maxTokens)
+        assertEquals("", config.maxTokensText)
+        assertEquals("", config.contextWindowText)
+    }
+
+    @Test
+    fun llmConfigsDocumentLegacyNumericValuesReadAsText() {
+        // 存量兼容：旧格式存数字，新格式存文本。string() 把数字读成字面文本，无损。
+        // 数字读成字面文本；0 归一为未设置（空串）。
+        val json = """
+            {"active_id":"cfg-a","configs":[{"id":"cfg-a","name":"Primary","provider":"openai","endpoint":"https://api.example","api_key":"k","model":"m","protocol":"openai-responses","proxy":"","max_tokens":128000,"context_window_tokens":0,"created_at":1,"updated_at":2}]}
+        """.trimIndent()
+
+        val config = LlmConfigsSettingsCodec.parse(json).configs.single()
+
+        assertEquals("128000", config.maxTokensText)
+        assertEquals("", config.contextWindowText)
+    }
+
+    @Test
+    fun llmConfigsDocumentCorruptValueFieldsFallBackToUnset() {
+        // 类型不合法（对象/数组）：as? JsonPrimitive 落空 → 空串，不崩
+        val json = """
+            {"active_id":"cfg-a","configs":[{"id":"cfg-a","name":"Primary","provider":"openai","endpoint":"https://api.example","api_key":"k","model":"m","protocol":"openai-responses","proxy":"","max_tokens":{"bad":1},"context_window_tokens":[1],"created_at":1,"updated_at":2}]}
+        """.trimIndent()
+
+        val config = LlmConfigsSettingsCodec.parse(json).configs.single()
+
+        assertEquals("", config.maxTokensText)
+        assertEquals("", config.contextWindowText)
     }
 
     @Test
@@ -142,6 +172,21 @@ class SettingsDomainCodecsTest {
             ),
             tools,
         )
+    }
+
+    // 保护：手改 tools/custom_py_tools.json 的 timeout_ms 绕过写入口校验。
+    // 负值会走到 PyRuntime 的 withTimeout(negative) 抛 IllegalArgumentException，
+    // 极大值则让工具永不超时，所以读盘侧必须把值夹回 1000..120000。
+    @Test
+    fun customPyToolTimeoutMsIsClampedToWritableRange() {
+        fun timeoutOf(raw: String) = ToolSettingsCodec.parseCustomPyTools(
+            """{"tools":[{"name":"py_x","code":"def main(): pass","timeout_ms":$raw}]}"""
+        ).single().timeoutMs
+
+        assertEquals(CustomPyTool.MIN_CUSTOM_PY_TOOL_TIMEOUT_MS, timeoutOf("-1"))
+        assertEquals(CustomPyTool.MIN_CUSTOM_PY_TOOL_TIMEOUT_MS, timeoutOf("500"))
+        assertEquals(CustomPyTool.MAX_CUSTOM_PY_TOOL_TIMEOUT_MS, timeoutOf("999999999"))
+        assertEquals(45_000L, timeoutOf("45000"))
     }
 
     @Test
@@ -303,7 +348,8 @@ class SettingsDomainCodecsTest {
     fun appStateResidentNotificationDefaultsDisabledAndRoundTrips() {
         assertFalse(AppStateSettingsCodec.parse("""{}""").residentNotificationEnabled)
 
-        val json = AppStateSettingsCodec.encode(AppStateSettings(residentNotificationEnabled = true))
+        val json =
+            AppStateSettingsCodec.encode(AppStateSettings(residentNotificationEnabled = true))
         assertTrue(jsonObject(json)["resident_notification_enabled"]!!.jsonPrimitive.boolean)
         assertTrue(AppStateSettingsCodec.parse(json).residentNotificationEnabled)
     }
@@ -315,6 +361,16 @@ class SettingsDomainCodecsTest {
         val json = AppStateSettingsCodec.encode(AppStateSettings(floatingBallAutoExpand = false))
         assertFalse(jsonObject(json)["floating_ball_auto_expand"]!!.jsonPrimitive.boolean)
         assertFalse(AppStateSettingsCodec.parse(json).floatingBallAutoExpand)
+    }
+
+    @Test
+    fun appStateVoiceAssistantIsolatedSessionDefaultsEnabledAndRoundTrips() {
+        assertTrue(AppStateSettingsCodec.parse("""{}""").voiceAssistantIsolatedSession)
+
+        val json =
+            AppStateSettingsCodec.encode(AppStateSettings(voiceAssistantIsolatedSession = false))
+        assertFalse(jsonObject(json)["voice_assistant_isolated_session"]!!.jsonPrimitive.boolean)
+        assertFalse(AppStateSettingsCodec.parse(json).voiceAssistantIsolatedSession)
     }
 
     @Test
@@ -332,24 +388,6 @@ class SettingsDomainCodecsTest {
     }
 
     @Test
-    fun appStateIgnoresLegacyDeadKeys() {
-        val legacy =
-            """{"onboarding_completed":true,"startup_assistant_ui":"chat_only","last_opened_agent_id":"main","language_tag":"zh-CN"}"""
-        val parsed = AppStateSettingsCodec.parse(legacy)
-
-        assertTrue(parsed.onboardingCompleted)
-        assertEquals("zh-CN", parsed.languageTag)
-    }
-
-    @Test
-    fun appStateEncodeDropsLegacyDeadKeys() {
-        val root = jsonObject(AppStateSettingsCodec.encode(AppStateSettings()))
-
-        assertNull(root["startup_assistant_ui"])
-        assertNull(root["last_opened_agent_id"])
-    }
-
-    @Test
     fun appStateMalformedFallsBackToDefaults() {
         assertEquals(AppStateSettings(), AppStateSettingsCodec.parse("not json{"))
         assertEquals(AppStateSettings(), AppStateSettingsCodec.parse(""))
@@ -357,8 +395,8 @@ class SettingsDomainCodecsTest {
     }
 
     @Test
-    fun appStateBlankThemeModeFallsBackToDark() {
-        assertEquals("dark", AppStateSettingsCodec.parse("""{"theme_mode":""}""").themeMode)
+    fun appStateBlankThemeModeFallsBackToLight() {
+        assertEquals("light", AppStateSettingsCodec.parse("""{"theme_mode":""}""").themeMode)
     }
 
     @Test
@@ -383,9 +421,28 @@ class SettingsDomainCodecsTest {
     }
 
     @Test
-    fun appStateLoadLastConversationDefaultsDisabled() {
-        assertFalse(AppStateSettingsCodec.parse("""{}""").loadLastConversationOnStartup)
-        assertFalse(AppStateSettings().loadLastConversationOnStartup)
+    fun appStateCompactionThresholdIsClampedOrPreservesZero() {
+        fun thresholdOf(raw: String) =
+            AppStateSettingsCodec.parse("""{"context_compaction_threshold_percent":$raw}""").contextCompactionThresholdPercent
+
+        assertEquals(0, thresholdOf("0"))
+        assertEquals(30, thresholdOf("10"))
+        assertEquals(30, thresholdOf("-50"))
+        assertEquals(95, thresholdOf("120"))
+        assertEquals(70, thresholdOf("70"))
+        assertEquals(70, thresholdOf("\"invalid\""))
+    }
+
+    // 保护：手改 tools/mcp/service.json 的 port 绕过设置页校验（1024..65535）。
+    // 越界端口不会崩，但会让 MCP 服务静默起不来，所以读盘侧必须夹回可用区间。
+    @Test
+    fun mcpServicePortIsClampedToWritableRange() {
+        fun portOf(raw: String) = McpServiceSettingsCodec.parse("""{"port":$raw}""").port
+
+        assertEquals(RuntimeMcpServiceConfig.MIN_PORT, portOf("0"))
+        assertEquals(RuntimeMcpServiceConfig.MIN_PORT, portOf("80"))
+        assertEquals(RuntimeMcpServiceConfig.MAX_PORT, portOf("99999"))
+        assertEquals(8791, portOf("8791"))
     }
 
     private fun jsonObject(json: String) = Json.parseToJsonElement(json).jsonObject

@@ -1,7 +1,6 @@
 package com.niki914.zafiro.app.ui.model
 
 import androidx.annotation.StringRes
-import androidx.lifecycle.viewModelScope
 import com.niki914.logging.Logger
 import com.niki914.uikit.base.ComposeMVIViewModel
 import com.niki914.zafiro.app.R
@@ -9,8 +8,7 @@ import com.niki914.zafiro.repo.StorageApi
 import com.niki914.zafiro.repo.StorageKind
 import com.niki914.zafiro.repo.StorageUsage
 import com.niki914.zafiro.repo.XRepo
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.launch
+import com.niki914.zafiro.api.util.runCatchingCancellable
 
 enum class StorageCategory(
     val kind: StorageKind,
@@ -93,16 +91,18 @@ class StorageSettingsViewModel(
             is StorageSettingsIntent.RequestClear -> updateState {
                 copy(confirmation = StorageConfirmationState(intent.category), inlineError = null)
             }
+
             StorageSettingsIntent.DismissConfirmation -> updateState {
                 copy(confirmation = null, inlineError = null)
             }
+
             StorageSettingsIntent.ConfirmClear -> confirmClear()
         }
     }
 
     private suspend fun load() {
         updateState { copy(isLoading = true) }
-        try {
+        runCatchingCancellable {
             val usage = provider.usage().associateBy { it.kind }
             updateState {
                 copy(
@@ -117,8 +117,7 @@ class StorageSettingsViewModel(
                     inlineError = null,
                 )
             }
-        } catch (throwable: Throwable) {
-            if (throwable is CancellationException) throw throwable
+        }.onFailure { throwable ->
             Logger.w(LOG_TAG, "load failed reason=${throwable.message}")
             updateState {
                 copy(
@@ -140,12 +139,11 @@ class StorageSettingsViewModel(
                 inlineError = null,
             )
         }
-        try {
+        runCatchingCancellable {
             provider.clear(category.kind)
             Logger.i(LOG_TAG, "clear succeeded category=${category.kind}")
             load()
-        } catch (throwable: Throwable) {
-            if (throwable is CancellationException) throw throwable
+        }.onFailure { throwable ->
             Logger.w(LOG_TAG, "clear failed category=${category.kind} reason=${throwable.message}")
             load()
             updateState {

@@ -10,6 +10,8 @@ package com.niki914.okia.protocol
 interface Compat {
 
     // 稳定协议 id（如 "deepseek"）。协议类从 compat 取 id，保证 withCodec 后身份不变。
+    val queuedKeepAliveLimitMs: Long? get() = null
+
     val id: String
 
     // 协议自带的默认端点（null = 协议不自带，调用方必须提供 endpoint）。
@@ -89,6 +91,8 @@ enum class ThinkingFormat {
  * Design source: kai PRD §4.3 DeepSeekCompat（M0 范围）。
  */
 class DeepSeekCompat : Compat {
+    // https://api-docs.deepseek.com/quick_start/rate_limit/
+    override val queuedKeepAliveLimitMs: Long = 10 * 60 * 1000L
     override val id: String = "deepseek"
     override val defaultEndpoint: String? = "https://api.deepseek.com/chat/completions"
     override val maxTokensField: MaxTokensField = MaxTokensField.MaxTokens

@@ -1,10 +1,13 @@
 package com.niki914.zafiro.app
 
 import android.app.Application
-import com.niki914.zafiro.api.Agent
+import android.content.ComponentName
+import com.niki914.xsettings.XSettings
 import com.niki914.zafiro.api.AgentControl
+import com.niki914.zafiro.api.AgentManager
+import com.niki914.zafiro.api.McpService
 import com.niki914.zafiro.app.conversation.RoomConversationStore_Tmp
-import com.niki914.zafiro.business.agent.AgentImpl
+import com.niki914.zafiro.business.agent.AgentManagerImpl
 import com.niki914.zafiro.business.agent.ConversationStore_Tmp
 import com.niki914.zafiro.business.application.ApplicationService
 import com.niki914.zafiro.business.application.ApplicationServiceImpl
@@ -14,9 +17,11 @@ import com.niki914.zafiro.business.notification.NotificationChannelManager
 import com.niki914.zafiro.business.notification.NotificationChannelManagerImpl
 import com.niki914.zafiro.business.permission.PermissionManager
 import com.niki914.zafiro.business.permission.PermissionManagerImpl
+import com.niki914.zafiro.mcp.service.McpServiceImpl
+import com.niki914.zafiro.mod.feat.ZafiroAccessibilityService
+import com.niki914.zafiro.repo.XRepo
 import com.niki914.zafiro.repo.XSettingsImpl
 import com.niki914.zafiro.service.installService
-import com.niki914.xsettings.XSettings
 
 /**
  * 主进程的组合根：`installService` 只在这里出现。
@@ -37,21 +42,29 @@ object AppServices {
     fun install(application: Application) {
         // 会话持久化端口：Room 在 app 侧，实现侧经它读写会话记录
         installService<ConversationStore_Tmp>(RoomConversationStore_Tmp())
-        // 会话门面：宽接口与窄接口指向同一实例
-        installService<Agent>(AgentImpl)
-        installService<AgentControl>(AgentImpl)
+        val agentManager = AgentManagerImpl()
+        installService<AgentManager>(agentManager)
+        installService<AgentControl>(agentManager.control)
 
         // 前台能力：必须在 PermissionManager 之前装（它经注册表取 ApplicationService）
         val appService = ApplicationServiceImpl(application)
         appService.attach()
         installService<ApplicationService>(appService)
 
-        installService<PermissionManager>(PermissionManagerImpl())
+        // 无障碍组件名只能由 app 侧给出：类名不随 applicationId（`.debug` 后缀）改变
+        installService<PermissionManager>(
+            PermissionManagerImpl(
+                ComponentName(application, ZafiroAccessibilityService::class.java),
+            )
+        )
         // 附件落地（SAF uri → 真实路径 + 全局文件访问权）：自持 PermissionManager，零构造参数
         installService<FilesService>(FilesServiceImpl())
         installService<NotificationChannelManager>(NotificationChannelManagerImpl(application))
 
         // 本地配置读取口：给 app 以外的模块按需取用
         installService<XSettings>(XSettingsImpl)
+
+        // MCP 服务：把 Zafiro 的工具暴露成标准 MCP Streamable HTTP 端点
+        installService<McpService>(McpServiceImpl { XRepo.mcpService.get() })
     }
 }

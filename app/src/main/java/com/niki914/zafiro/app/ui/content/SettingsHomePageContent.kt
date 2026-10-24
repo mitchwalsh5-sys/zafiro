@@ -48,8 +48,7 @@ private fun SettingsHomePageContentBody(
         onAction = { action ->
             when (action) {
                 is SettingsRowAction.Navigate -> groupsById[action.id]?.let(onOpenGroup)
-                is SettingsRowAction.Click -> Unit
-                is SettingsRowAction.ToggleChanged -> Unit
+                else -> Unit
             }
         },
     )
@@ -65,11 +64,10 @@ private fun settingsHomePageSpec(
                 title = stringResource(section.titleRes),
                 layout = SettingsSectionLayout.GroupedCard,
                 rows = section.groups.map { group ->
-                    val summary = stringResource(group.summaryRes)
                     SettingsRowSpec.Navigation(
                         id = group.name,
                         title = stringResource(group.titleRes),
-                        summary = summary.takeIf { it.isNotBlank() },
+                        summary = group.summaryRes?.let { stringResource(it) },
                     )
                 },
             )

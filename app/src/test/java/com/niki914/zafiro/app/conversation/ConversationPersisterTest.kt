@@ -1,12 +1,19 @@
+// 保护：消息级增量持久化器的落盘契约——只追新条、parentId 链、按会话隔离、
+// 重复观察幂等、错误回合半条也落、已删会话不杀 collector；
+// 以及 `updated_at` 只在生命周期边界（等待审批 / 回合结束）刷新，增量落盘不碰它。
 package com.niki914.zafiro.app.conversation
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.niki914.okia.conversation.Conversation
+import com.niki914.okia.conversation.ConversationEntry
 import com.niki914.okia.conversation.MessageEntry
 import com.niki914.okia.message.AssistantMessage
 import com.niki914.okia.message.ContentBlock
 import com.niki914.okia.message.Message
+import com.niki914.zafiro.api.model.AgentState
+import com.niki914.zafiro.api.model.ApprovalRequest
+import com.niki914.zafiro.api.model.TurnOutcome
 import com.niki914.zafiro.app.util.SilentLoggerRule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,6 +21,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -21,12 +29,12 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 消息级增量持久化器测试（D3-2/D3-8）：注入可控快照流，验证增量写、
@@ -141,13 +149,62 @@ class ConversationPersisterTest {
     }
 
     @Test
-    fun nullSnapshot_doesNotPersist() = runTest {
-        val sessionId = ConversationRepo.createConversation("session-1", "hi")
+    fun persistNow_leavesUpdatedAtUntouched() = runTest {
+        val initialTime = 1000L
+        val sessionId = ConversationRepo.createConversation("session-1", "hi", now = initialTime)
 
-        // persistNow 只处理具体快照；null 由 start() 的 collect 过滤（流接线
-        // 不在此测，见 incrementalInsert 对重复快照的幂等覆盖）
-        assertEquals(0, ConversationRepo.countEntries(sessionId))
-        assertNull(ConversationRepo.getConversation(sessionId)?.snapshot?.leafId)
+        ConversationPersister.persistNow(conversationOf(sessionId, "u1", "a1"))
+
+        val record = ConversationRepo.getConversation(sessionId)!!
+        assertEquals(initialTime, record.summary.updatedAt)
+    }
+
+    @Test
+    fun trackActivity_bumpsUpdatedAtOnApprovalAndTurnEnd() = runTest {
+        val initialTime = 1000L
+        val sessionId = ConversationRepo.createConversation("session-1", "hi", now = initialTime)
+        val status = MutableStateFlow<AgentState>(AgentState.Idle())
+        val touched = AtomicInteger()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        ConversationPersister.trackActivity(scope, status) {
+            touched.incrementAndGet()
+            sessionId
+        }
+
+        status.value = AgentState.Generating("a")
+        status.value = AgentState.WaitingApproval(approvalRequest())
+        status.value = AgentState.Idle(lastOutcome = TurnOutcome.Completed)
+
+        awaitUpdatedAtAbove(sessionId, initialTime)
+        repeat(50) {
+            if (touched.get() >= 2) return@repeat
+            delay(10)
+        }
+        assertEquals(2, touched.get())
+        scope.cancel()
+    }
+
+    @Test
+    fun trackActivity_ignoresIdleWithoutTurnOutcome() = runTest {
+        // 启动、载入会话、discard 都落回不带 outcome 的空闲态：不是边界。
+        // 否则打开一个旧会话就会把它顶到列表最前。
+        val sessionId = ConversationRepo.createConversation("session-1", "hi")
+        val status = MutableStateFlow<AgentState>(AgentState.Idle())
+        val touched = AtomicInteger()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        ConversationPersister.trackActivity(scope, status) {
+            touched.incrementAndGet()
+            sessionId
+        }
+
+        status.value = AgentState.Generating("a")
+        status.value = AgentState.Idle()
+        status.value = AgentState.ToolRunning(toolName = "t", label = "t", argumentsJson = null)
+        status.value = AgentState.Idle()
+        status.value = AgentState.WaitingApproval(approvalRequest())
+
+        assertEquals(1, touched.get())
+        scope.cancel()
     }
 
     @Test
@@ -179,6 +236,26 @@ class ConversationPersisterTest {
 
     // ── helpers ─────────────────────────────────────────────────────────────
 
+    private fun approvalRequest(): ApprovalRequest = ApprovalRequest.ToolExecution(
+        toolName = "run",
+        command = "rm -rf /",
+        ruleName = "confirm",
+        matchedPattern = "rm -rf",
+    )
+
+    /** 轮询等待：Room 写入在真实线程上，runTest 的虚拟时间不推进 delay。 */
+    private suspend fun awaitUpdatedAtAbove(sessionId: String, timestamp: Long) {
+        withContext(Dispatchers.Default) {
+            withTimeout(5_000) {
+                while ((ConversationRepo.getConversation(sessionId)?.summary?.updatedAt
+                        ?: 0L) <= timestamp
+                ) {
+                    delay(10)
+                }
+            }
+        }
+    }
+
     private fun conversationOf(sessionId: String, vararg messages: String): Conversation {
         var parent: String? = null
         val history = messages.mapIndexed { index, text ->
@@ -199,10 +276,10 @@ class ConversationPersisterTest {
         )
     }
 
-    private fun linearEntries(vararg messages: Message): List<com.niki914.okia.conversation.ConversationEntry> {
+    private fun linearEntries(vararg messages: Message): List<ConversationEntry> {
         var parent: String? = null
         return messages.mapIndexed { index, message ->
-            val entry = com.niki914.okia.conversation.ConversationEntry(
+            val entry = ConversationEntry(
                 id = "m$index",
                 parentId = parent,
                 timestamp = 1000L + index,

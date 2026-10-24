@@ -4,12 +4,14 @@ on:
   push:
     branches:
       - main
+      - upgrade/control-1.8.1-stability
     tags:
       - 'v*'
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   build:
@@ -36,6 +38,21 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Run regression checks
+        run: >-
+          ./gradlew :libs:okia:testDebugUnitTest :business:agent:testDebugUnitTest
+          :libs:libterm-backend-shizuku:testDebugUnitTest :agent-runtime:testDebugUnitTest
+          :app:testDebugUnitTest :app:lintDebug --no-daemon --stacktrace
+
+      - name: Upload check reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-check-reports
+          path: |
+            **/build/reports/tests/
+            app/build/reports/lint-results-debug.*
 
       - name: Decode and validate signing keystore
         env:
@@ -64,6 +81,31 @@ jobs:
             -PRELEASE_KEY_ALIAS="nexus_key" \
             -PRELEASE_KEY_PASSWORD="$SIGNING_PASSWORD"
 
+      - name: Verify APK identity and established signing certificate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 37458270847 --repo "$GITHUB_REPOSITORY" --name Zafiro-Control-1.5.3-control --dir "$RUNNER_TEMP/control-baseline"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
+          AAPT=$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -1)
+          OLD_APK=$(find "$RUNNER_TEMP/control-baseline" -name '*.apk' -print -quit)
+          test -n "$OLD_APK"
+          "$APKSIGNER" verify --print-certs "$OLD_APK" > "$RUNNER_TEMP/baseline-cert.txt"
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/candidate-cert.txt"
+          diff <(grep 'certificate SHA-256 digest:' "$RUNNER_TEMP/baseline-cert.txt") <(grep 'certificate SHA-256 digest:' "$RUNNER_TEMP/candidate-cert.txt")
+          "$AAPT" dump badging app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/candidate-badging.txt"
+          head -1 "$RUNNER_TEMP/candidate-badging.txt" > apk-verification.txt
+          python3 - <<'PYCODE'
+          import re
+          from pathlib import Path
+          line=Path("apk-verification.txt").read_text()
+          assert "name='com.niki914.zafiro.control'" in line, line
+          assert int(re.search(r"versionCode='(\d+)'",line).group(1)) > 14, line
+          PYCODE
+          cat "$RUNNER_TEMP/candidate-cert.txt" >> apk-verification.txt
+          sha256sum app/build/outputs/apk/release/app-release.apk >> apk-verification.txt
+
       - name: Resolve version name
         id: version
         run: |
@@ -81,11 +123,12 @@ jobs:
              "Zafiro-Control-${{ steps.version.outputs.name }}.apk"
 
       - name: Upload APK artifact
-        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: Zafiro-Control-${{ steps.version.outputs.name }}
-          path: Zafiro-Control-*.apk
+          path: |
+            Zafiro-Control-*.apk
+            apk-verification.txt
           if-no-files-found: error
 
       - name: Create GitHub Release
@@ -97,3 +140,7 @@ jobs:
             Zafiro-*.apk \
             --title "${{ github.ref_name }}" \
             --generate-notes
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f packing/nexus_release.jks

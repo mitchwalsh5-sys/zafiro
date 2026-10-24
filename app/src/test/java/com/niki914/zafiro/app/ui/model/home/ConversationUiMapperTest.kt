@@ -8,10 +8,10 @@ import com.niki914.zafiro.api.model.ToolOutcome
 import com.niki914.zafiro.api.model.TurnBlock
 import com.niki914.zafiro.api.model.TurnFailureCode
 import com.niki914.zafiro.api.model.TurnId
-import com.niki914.zafiro.app.ui.model.home.HomeChatBlock
-import com.niki914.zafiro.app.ui.model.home.HomeToolState
 import com.niki914.zafiro.chat.LlmErrorCode
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationUiMapperTest {
@@ -70,7 +70,13 @@ class ConversationUiMapperTest {
                 ConversationTurn(
                     id = TurnId("t0"),
                     userText = "q",
-                    blocks = listOf(TurnBlock.Failure("t0:0", "network", TurnFailureCode.Transport)),
+                    blocks = listOf(
+                        TurnBlock.Failure(
+                            "t0:0",
+                            "network",
+                            TurnFailureCode.Transport
+                        )
+                    ),
                 ),
             ),
         ).toHomeTurns().single()
@@ -88,7 +94,13 @@ class ConversationUiMapperTest {
                 ConversationTurn(
                     id = TurnId("t0"),
                     userText = "q",
-                    blocks = listOf(TurnBlock.Failure("t0:0", null, TurnFailureCode.OutputTruncated)),
+                    blocks = listOf(
+                        TurnBlock.Failure(
+                            "t0:0",
+                            null,
+                            TurnFailureCode.OutputTruncated
+                        )
+                    ),
                 ),
             ),
         ).toHomeTurns().single()
@@ -97,5 +109,31 @@ class ConversationUiMapperTest {
             HomeChatBlock.Error(null, LlmErrorCode.OutputTruncated),
             turn.blocks.single(),
         )
+    }
+
+    @Test
+    fun mapsIsCompactedDivider() {
+        val turns = Conversation(
+            turns = listOf(
+                ConversationTurn(
+                    id = TurnId("t0"),
+                    userText = "",
+                    isCompactedDivider = true,
+                    isCompacting = false,
+                ),
+                ConversationTurn(
+                    id = TurnId("t1"),
+                    userText = "",
+                    isCompactedDivider = true,
+                    isCompacting = true,
+                )
+            ),
+        ).toHomeTurns()
+
+        assertTrue(turns[0].isCompactedDivider)
+        assertFalse(turns[0].isCompacting)
+
+        assertTrue(turns[1].isCompactedDivider)
+        assertTrue(turns[1].isCompacting)
     }
 }

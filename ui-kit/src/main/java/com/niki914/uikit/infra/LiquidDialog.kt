@@ -32,6 +32,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -43,20 +44,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.colorControls
 import com.kyant.backdrop.effects.lens
-import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.niki914.uikit.base.LocalAppDarkTheme
 import com.niki914.uikit.infra.shape.G2FieldShape
 import java.util.concurrent.atomic.AtomicLong
 
 internal class LiquidDialogHostEntry(
     val id: Long,
+    initialVisible: Boolean,
     content: @Composable () -> Unit,
 ) {
     var content by mutableStateOf(content)
+        internal set
+    var visible by mutableStateOf(initialVisible)
         internal set
 }
 
@@ -66,12 +75,20 @@ internal class LiquidDialogHostState {
     val entries: List<LiquidDialogHostEntry>
         get() = mutableEntries
 
-    internal fun upsert(id: Long, content: @Composable () -> Unit) {
+    val hasActiveDialog: Boolean
+        get() = mutableEntries.any { it.visible }
+
+    internal fun upsert(id: Long, visible: Boolean, content: @Composable () -> Unit) {
         val entry = mutableEntries.firstOrNull { it.id == id }
         if (entry != null) {
             entry.content = content
+            entry.visible = visible
         } else {
-            mutableEntries += LiquidDialogHostEntry(id = id, content = content)
+            mutableEntries += LiquidDialogHostEntry(
+                id = id,
+                initialVisible = visible,
+                content = content
+            )
         }
     }
 
@@ -80,14 +97,15 @@ internal class LiquidDialogHostState {
     }
 }
 
-internal val LocalLiquidDialogHostState: ProvidableCompositionLocal<LiquidDialogHostState> =
-    staticCompositionLocalOf {
-        error("LiquidDialog must be used inside LiquidScreen")
-    }
+val LocalHasActiveDialog: ProvidableCompositionLocal<Boolean> =
+    staticCompositionLocalOf { false }
 
-private val liquidDialogHostEntryId = AtomicLong(0L)
+internal val LocalLiquidDialogHostState: ProvidableCompositionLocal<LiquidDialogHostState?> =
+    compositionLocalOf { null }
 
-private fun nextLiquidDialogHostEntryId(): Long = liquidDialogHostEntryId.incrementAndGet()
+internal val liquidDialogHostEntryId = AtomicLong(0L)
+
+internal fun nextLiquidDialogHostEntryId(): Long = liquidDialogHostEntryId.incrementAndGet()
 
 @Composable
 fun LiquidDialog(
@@ -101,10 +119,11 @@ fun LiquidDialog(
     content: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
     val hostState = LocalLiquidDialogHostState.current
+        ?: error("LiquidDialog must be used inside LiquidScreen")
     val dialogId = remember { nextLiquidDialogHostEntryId() }
 
     SideEffect {
-        hostState.upsert(dialogId) {
+        hostState.upsert(dialogId, visible) {
             LiquidDialogSurface(
                 visible = visible,
                 onDismissRequest = onDismissRequest,
@@ -136,10 +155,12 @@ private fun LiquidDialogSurface(
     actions: (@Composable RowScope.() -> Unit)? = null,
     content: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
-    val backdrop = rememberLayerBackdrop()
+    val fallbackBackdrop = rememberLayerBackdrop()
+    val resolvedBackdrop = LocalScreenBackdrop.current ?: fallbackBackdrop
+    val isDarkTheme = LocalAppDarkTheme.current
     val colorScheme = MaterialTheme.colorScheme
     val scrimColor = colorScheme.scrim.copy(alpha = 0.42f)
-    val panelSurfaceColor = colorScheme.surfaceContainerHigh.copy(alpha = 0.76f)
+    val panelSurfaceColor = LiquidGlassPresets.Dialog.surfaceColor(isDarkTheme, colorScheme)
     val panelTintColor = colorScheme.primaryContainer.copy(alpha = 0.18f)
     val interactionSource = remember { MutableInteractionSource() }
     val panelShape = G2FieldShape(48.dp)
@@ -152,6 +173,18 @@ private fun LiquidDialogSurface(
     LaunchedEffect(Unit) {
         withFrameNanos { }
         dialogMounted = true
+    }
+
+    // LiquidDialog 是 portal overlay 而不是 Dialog，不会自动接管焦点：显示时必须主动
+    // 释放页面上残留的输入焦点，否则键盘会继续顶在弹窗上、焦点也仍留在背后的输入框里。
+    // （弹窗自带输入框的调用方在更晚的时机 requestFocus，仍然能拿到焦点。）
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    LaunchedEffect(effectiveVisible) {
+        if (effectiveVisible) {
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
+        }
     }
 
     // 弹窗可见时消费系统返回键（issue：语言/协议弹窗按返回直接弹页）。
@@ -217,12 +250,12 @@ private fun LiquidDialogSurface(
                     .heightIn(max = maxPanelHeight)
                     .verticalScroll(scrollState)
                     .drawBackdrop(
-                        backdrop = backdrop,
+                        backdrop = resolvedBackdrop,
                         shape = { panelShape },
+                        highlight = { LiquidGlassPresets.Dialog.highlight(isDarkTheme) },
+                        shadow = { LiquidGlassPresets.Dialog.shadow(isDarkTheme) },
                         effects = {
-                            vibrancy()
-                            blur(4.dp.toPx())
-                            lens(14.dp.toPx(), 28.dp.toPx())
+                            LiquidGlassPresets.Dialog.applyEffects(this, isDarkTheme)
                         },
                         onDrawSurface = {
                             drawRect(panelTintColor, blendMode = BlendMode.Hue)

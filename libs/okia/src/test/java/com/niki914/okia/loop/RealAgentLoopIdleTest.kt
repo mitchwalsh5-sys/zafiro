@@ -10,6 +10,7 @@ import com.niki914.okia.message.AssistantMessage
 import com.niki914.okia.message.ContentBlock
 import com.niki914.okia.message.Message
 import com.niki914.okia.message.StopReason
+import com.niki914.okia.protocol.OpenAIChatCompletionCompat
 import com.niki914.okia.protocol.OpenAIChatCompletionProtocol
 import com.niki914.okia.protocol.ProtocolCompatMapper
 import com.niki914.okia.protocol.ProtocolEvent
@@ -39,6 +40,7 @@ import org.junit.Test
  * 进历史（超时也写入），不重试、不触发 beforeStop。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
+// 保护：DeepSeek queue heartbeats extend startup only; silence and stalled inference still stop.
 class RealAgentLoopIdleTest {
 
     // ── fixtures ───────────────────────────────────────────────────────────
@@ -153,7 +155,7 @@ class RealAgentLoopIdleTest {
     fun keepAliveLinesDoNotResetIdleTimer() = runTest {
         // 新定义核心差异（G7）：网络层活跃（keep-alive 注释行持续到达）不算
         // agent 活跃度——真实协议解析下 keep-alive 不产出 ProtocolEvent，仍超时
-        val protocol = OpenAIChatCompletionProtocol()
+        val protocol = OpenAIChatCompletionProtocol(compat = OpenAIChatCompletionCompat())
         val mapper = ProtocolCompatMapper.from(protocol)
         val lines = flow {
             repeat(20) {
@@ -301,4 +303,55 @@ class RealAgentLoopIdleTest {
 
         assertEquals(TurnResult.Completed(CompletionReason.Stop), result.await())
     }
+    private fun deepSeekRequest(lines: Flow<SseLine>): LoopRequest {
+        val engine = FakeHttpEngine().apply {
+            streamResult = { StreamResponse.Ok(200, emptyMap(), lines) }
+        }
+        return loopRequest(emptyFlow(), engine = engine).copy(
+            protocolMapper = ProtocolCompatMapper.from(OpenAIChatCompletionProtocol()),
+            idleTimeoutSeconds = 1,
+        )
+    }
+
+    @Test
+    fun deepSeekQueuedHeartbeatsAllowInferenceAfterIdleWindow() = runTest {
+        val lines = flow {
+            repeat(10) {
+                emit(SseLine(null))
+                delay(500)
+            }
+            emit(SseLine("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ready\"},\"finish_reason\":\"stop\"}]}"))
+            emit(SseLine(""))
+        }
+        assertEquals(TurnResult.Completed(CompletionReason.Stop), runLoop(deepSeekRequest(lines)))
+    }
+
+    @Test
+    fun deepSeekHeartbeatsCannotKeepQueueAliveForever() = runTest {
+        val lines = flow {
+            while (true) {
+                emit(SseLine(null))
+                delay(500)
+            }
+        }
+        val start = testScheduler.currentTime
+        assertEquals(TurnResult.IdleTimeout, runLoop(deepSeekRequest(lines)))
+        assertEquals(600_000L, testScheduler.currentTime - start)
+    }
+
+    @Test
+    fun deepSeekHeartbeatsCannotHideStalledInference() = runTest {
+        val lines = flow {
+            emit(SseLine("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}"))
+            emit(SseLine(""))
+            while (true) {
+                emit(SseLine(null))
+                delay(100)
+            }
+        }
+        val start = testScheduler.currentTime
+        assertEquals(TurnResult.IdleTimeout, runLoop(deepSeekRequest(lines)))
+        assertEquals(1_000L, testScheduler.currentTime - start)
+    }
+
 }

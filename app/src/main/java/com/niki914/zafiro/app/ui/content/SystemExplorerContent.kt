@@ -40,6 +40,9 @@ import com.niki914.zafiro.business.permission.Permission
 import com.niki914.zafiro.business.permission.PermissionManager
 import com.niki914.zafiro.business.permission.PermissionState
 import com.niki914.zafiro.service.requireService
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -171,10 +174,13 @@ fun SystemExplorerContent() {
                             if (!requestingShizuku) {
                                 requestingShizuku = true
                                 scope.launch {
-                                    val manager = requireService<PermissionManager>()
-                                    manager.request(Permission.SHIZUKU)
-                                    shizuku = readShizukuSnapshot(context)
-                                    requestingShizuku = false
+                                    try {
+                                        val manager = requireService<PermissionManager>()
+                                        manager.request(Permission.SHIZUKU)
+                                        shizuku = readShizukuSnapshot(context)
+                                    } finally {
+                                        requestingShizuku = false
+                                    }
                                 }
                             }
                         },
@@ -250,7 +256,7 @@ private fun ProcessCard(process: ProcessSnapshot) {
                 style = MaterialTheme.typography.bodyLarge,
             )
             Text(
-                text = "${formatMemoryKb(process.rssKb)} · PID ${process.pid} · ${process.user}",
+                text = "${formatMemoryKb(process.rssKb)} RSS · PID ${process.pid} · ${process.user}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -290,19 +296,26 @@ private suspend fun readShizukuSnapshot(context: Context): ShizukuSnapshot {
                 .sortedByDescending { it.rssKb }
                 .take(12),
         )
-    } catch (throwable: Throwable) {
+    } catch (throwable: Exception) {
+        if (throwable is CancellationException) throw throwable
         ShizukuSnapshot(
             status = "Granted · shell error",
-            identity = throwable.javaClass.simpleName,
+            identity = throwable.message?.take(200) ?: throwable.javaClass.simpleName,
         )
     } finally {
-        term.close()
+        withContext(NonCancellable) { term.close() }
     }
 }
 
 private fun TermResult<com.niki914.libterm.runtime.CommandResult>.stdoutOrNull(): String? {
     return when (this) {
-        is TermResult.Success -> value.stdout.toByteArray().decodeToString()
+        is TermResult.Success -> {
+            check(!value.timedOut && value.exitCode == 0) {
+                value.stderr.toByteArray().decodeToString().trim().take(200)
+                    .ifBlank { "Shell command failed (exit ${value.exitCode})" }
+            }
+            value.stdout.toByteArray().decodeToString()
+        }
         is TermResult.Failure -> null
     }
 }

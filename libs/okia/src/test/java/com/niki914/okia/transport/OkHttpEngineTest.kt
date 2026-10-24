@@ -2,12 +2,16 @@ package com.niki914.okia.transport
 
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -35,6 +39,25 @@ class OkHttpEngineTest {
     @After
     fun tearDown() {
         server.shutdown()
+    }
+
+    // 保护：Stop must close a stalled socket before waiting for its blocking reader.
+    @Test
+    fun cancellingStalledStreamDoesNotWaitForReadTimeout() = runBlocking {
+        server.enqueue(MockResponse().setBody("data: waiting\n").setBodyDelay(30, TimeUnit.SECONDS))
+        val response = engine.stream(HttpRequest(
+            "${server.url("/stream")}", "POST", emptyMap(), null,
+            HttpTimeouts(5_000, 60_000, 5_000),
+        )) as StreamResponse.Ok
+        val started = CompletableDeferred<Unit>()
+        val collection = async {
+            started.complete(Unit)
+            response.lines.toList()
+        }
+        started.await()
+        kotlinx.coroutines.delay(100)
+        withTimeout(2_000) { collection.cancelAndJoin() }
+        assertTrue(collection.isCancelled)
     }
 
     // ── stream ─────────────────────────────────────────────────────────────

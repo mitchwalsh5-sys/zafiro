@@ -1,5 +1,7 @@
 package com.niki914.zafiro.app.ui.content
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -7,34 +9,47 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.niki914.uikit.infra.component.SettingsDetailPageDefaults
 import com.niki914.uikit.infra.component.TintLiquidButton
+import com.niki914.uikit.infra.liquidScreenActionButtonBottomPadding
 import com.niki914.uikit.infra.liquidScreenTopPadding
 import com.niki914.zafiro.app.R
 
 @Composable
 fun DonePageContent(
     onEnterHome: () -> Unit,
+    onOpenPreferences: () -> Unit,
 ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .padding(top = liquidScreenTopPadding())
-            .padding(horizontal = 24.dp, vertical = 24.dp),
+            .padding(
+                start = SettingsDetailPageDefaults.HorizontalPadding,
+                end = SettingsDetailPageDefaults.HorizontalPadding,
+                top = 24.dp,
+                bottom = liquidScreenActionButtonBottomPadding(),
+            ),
     ) {
         Column(
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(modifier = Modifier.weight(1f))
             Column(
@@ -68,6 +83,23 @@ fun DonePageContent(
                 )
             }
             Spacer(modifier = Modifier.weight(1f))
+            Text(
+                text = stringResource(R.string.ui_onboard_done_advanced_entry),
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    textDecoration = TextDecoration.Underline,
+                ),
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onOpenPreferences,
+                    )
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            )
             TintLiquidButton(
                 text = stringResource(R.string.ui_onboard_done_enter_home),
                 onClick = onEnterHome,

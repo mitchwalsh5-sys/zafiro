@@ -1,6 +1,5 @@
 package com.niki914.zafiro.runtime.service
 
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -8,26 +7,31 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Binder
-import android.os.Build
 import android.os.DeadObjectException
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import com.niki914.zafiro.business.permission.Permission
-import com.niki914.zafiro.business.permission.PermissionManager
-import com.niki914.zafiro.business.permission.PermissionState
 import androidx.core.net.toUri
 import com.niki914.logging.Logger
 import com.niki914.store.HostApp
-import com.niki914.store.StoreDescriptorRegistry
 import com.niki914.store.XIpcStoreRepository
-
 import com.niki914.zafiro.api.Agent
+import com.niki914.zafiro.api.AgentControl
+import com.niki914.zafiro.api.AgentManager
 import com.niki914.zafiro.api.TurnStart
 import com.niki914.zafiro.api.model.AgentState
+import com.niki914.zafiro.api.model.ApprovalDecision
 import com.niki914.zafiro.api.model.TurnFailureCode
 import com.niki914.zafiro.app.MainActivity
+import com.niki914.zafiro.app.notification.ResidentNotificationBuilder
+import com.niki914.zafiro.app.notification.ResidentNotificationManager
+import com.niki914.zafiro.app.notification.TurnNotificationManager
+import com.niki914.zafiro.business.notification.NotificationChannelManager
+import com.niki914.zafiro.business.permission.Permission
+import com.niki914.zafiro.business.permission.PermissionManager
+import com.niki914.zafiro.business.permission.PermissionState
 import com.niki914.zafiro.chat.ToolStatusLabels
+import com.niki914.zafiro.repo.XRepo
 import com.niki914.zafiro.runtime.ipc.IAgentRuntimeService
 import com.niki914.zafiro.runtime.ipc.IAgentStoreService
 import com.niki914.zafiro.runtime.ipc.IRenderFrameCallback
@@ -35,23 +39,18 @@ import com.niki914.zafiro.runtime.ipc.RenderFrame
 import com.niki914.zafiro.service.requireService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicReference
 import com.niki914.zafiro.app.R as AppR
-
-import com.niki914.zafiro.api.AgentControl
-import com.niki914.zafiro.api.model.ApprovalDecision
-import com.niki914.zafiro.app.notification.ResidentNotificationBuilder
-import com.niki914.zafiro.app.notification.ResidentNotificationManager
-import com.niki914.zafiro.business.notification.NotificationChannelManager
 
 class AgentRuntimeService : Service() {
 
@@ -73,18 +72,22 @@ class AgentRuntimeService : Service() {
                 Logger.i(LOG_TAG, "Resident notification: Stop clicked")
                 agentControl.stop()
             }
+
             ResidentNotificationBuilder.ACTION_APPROVE -> {
                 Logger.i(LOG_TAG, "Resident notification: Approve clicked")
                 ResidentNotificationManager.resolveApproval(ApprovalDecision.Allow)
             }
+
             ResidentNotificationBuilder.ACTION_DECLINE -> {
                 Logger.i(LOG_TAG, "Resident notification: Decline clicked")
                 ResidentNotificationManager.resolveApproval(ApprovalDecision.Deny)
             }
+
             ACTION_START_RESIDENT -> {
                 isResidentRequested = true
                 updateResidentNotification()
             }
+
             ACTION_STOP_RESIDENT -> {
                 isResidentRequested = false
                 if (boundClientsCount == 0 && activeTurn.get() == null) {
@@ -120,12 +123,13 @@ class AgentRuntimeService : Service() {
         super.onDestroy()
     }
 
-    private val agent: Agent get() = requireService()
+    private val agentManager: AgentManager get() = requireService()
     private val agentControl: AgentControl get() = requireService()
     private val notificationChannelManager: NotificationChannelManager get() = requireService()
     private val permissionManager: PermissionManager get() = requireService()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val activeTurn = AtomicReference<ActiveTurn?>(null)
+    private var currentHostAgent: Agent? = null
     private var statusJob: Job? = null
     private var boundClientsCount = 0
     private var isResidentRequested = false
@@ -133,6 +137,7 @@ class AgentRuntimeService : Service() {
     private data class ActiveTurn(
         val callback: IRenderFrameCallback,
         val job: Job,
+        val agent: Agent,
     )
 
     companion object {
@@ -201,17 +206,35 @@ class AgentRuntimeService : Service() {
                 return
             }
 
-            agent.updateDraft { it.copy(text = q, images = emptyList(), files = emptyList()) }
-            when (val startResult = agent.stream()) {
+            val isIsolated = runBlocking { XRepo.voiceAssistantIsolatedSession() }
+            val targetAgent = if (isIsolated) {
+                currentHostAgent ?: agentManager.createTaskAgent(isPersistent = false).also {
+                    currentHostAgent = it
+                }
+            } else {
+                currentHostAgent?.release()
+                currentHostAgent = null
+                agentManager.main
+            }
+            targetAgent.updateDraft { it.copy(text = q, images = emptyList(), files = emptyList()) }
+            when (targetAgent.stream()) {
                 TurnStart.Busy -> {
-                    try {
-                        cb.asBinder().unlinkToDeath(deathRecipient, 0)
-                    } catch (_: Exception) {
+                    Logger.i(LOG_TAG, "submit preempting activeTurn isolated=$isIsolated")
+                    // 先登记再启动：失败路径会在 job 尾部清 activeTurn，倒序会被它抢先清成空。
+                    val job = scope.launch(start = CoroutineStart.LAZY) {
+                        if (preemptAndStream(targetAgent, isIsolated)) {
+                            executeTurn(cb, targetAgent)
+                        } else {
+                            if (activeTurn.get()?.callback === cb) activeTurn.set(null)
+                            rejectBusy(cb)
+                        }
                     }
-                    Logger.w(LOG_TAG, "submit rejected activeTurnBusy=true")
-                    sendError(cb, "Another turn is already in progress")
+                    activeTurn.set(ActiveTurn(cb, job, targetAgent))
+                    job.start()
+                    Logger.i(LOG_TAG, "turn registered preempting=true isolated=$isIsolated")
                     return
                 }
+
                 TurnStart.DraftEmpty -> {
                     try {
                         cb.asBinder().unlinkToDeath(deathRecipient, 0)
@@ -220,15 +243,42 @@ class AgentRuntimeService : Service() {
                     sendError(cb, "Query is blank")
                     return
                 }
+
                 TurnStart.Started -> {
-                    Logger.i(LOG_TAG, "agent.stream started successfully")
+                    markHostTurnStarted(targetAgent, isIsolated)
+                    Logger.i(
+                        LOG_TAG,
+                        "targetAgent.stream started successfully isolated=$isIsolated"
+                    )
                 }
             }
 
-            val job = scope.launch { executeTurn(cb) }
-            val turn = ActiveTurn(cb, job)
+            val job = scope.launch { executeTurn(cb, targetAgent) }
+            val turn = ActiveTurn(cb, job, targetAgent)
             activeTurn.set(turn)
-            Logger.i(LOG_TAG, "turn registered callbackLinked=true")
+            Logger.i(LOG_TAG, "turn registered callbackLinked=true isolated=$isIsolated")
+        }
+
+        /** 抢占上一回合：停止并等它真正结束，再重新发起。有界重试兜住 stop 落地的窗口。 */
+        private suspend fun preemptAndStream(agent: Agent, isIsolated: Boolean): Boolean {
+            val started = preemptPreviousTurn(agent)
+            if (started) markHostTurnStarted(agent, isIsolated)
+            return started
+        }
+
+        private fun rejectBusy(cb: IRenderFrameCallback) {
+            try {
+                cb.asBinder().unlinkToDeath(deathRecipient, 0)
+            } catch (_: Exception) {
+            }
+            sendError(cb, "Another turn is already in progress")
+        }
+
+        private fun markHostTurnStarted(agent: Agent, isIsolated: Boolean) {
+            val convId = agent.conversation.value.id?.value ?: if (isIsolated) "host" else ""
+            if (convId.isNotBlank()) {
+                TurnNotificationManager.markHostTurnStarted(convId)
+            }
         }
 
         override fun cancel() {
@@ -241,7 +291,7 @@ class AgentRuntimeService : Service() {
             Logger.i(LOG_TAG, "cancel requested")
             scope.launch {
                 try {
-                    agent.stop()
+                    turn.agent.stop()
                     Logger.i(LOG_TAG, "cancel done agent.stop completed")
                 } catch (_: Exception) {
                 }
@@ -249,7 +299,17 @@ class AgentRuntimeService : Service() {
         }
 
         override fun resetConversation() {
-            Logger.i(LOG_TAG, "reset conversation requested by host (ignored to protect shared conversation)")
+            val isIsolated = runBlocking { XRepo.voiceAssistantIsolatedSession() }
+            if (isIsolated) {
+                Logger.i(LOG_TAG, "reset conversation requested by host (isolated mode)")
+                currentHostAgent?.release()
+                currentHostAgent = null
+            } else {
+                Logger.i(
+                    LOG_TAG,
+                    "reset conversation requested by host (ignored to protect shared conversation)"
+                )
+            }
         }
     }
 
@@ -307,7 +367,6 @@ class AgentRuntimeService : Service() {
             val c = content ?: return
             postNotificationImpl(t, c, createContentIntent(uri))
         }
-
 
 
         private fun postNotificationImpl(
@@ -389,11 +448,11 @@ class AgentRuntimeService : Service() {
         }
     }
 
-    private suspend fun executeTurn(callback: IRenderFrameCallback) {
+    private suspend fun executeTurn(callback: IRenderFrameCallback, turnAgent: Agent) {
         val startedAtMs = System.currentTimeMillis()
         Logger.i(LOG_TAG, "turn started")
         var firstFrameSent = false
-        var lastRenderedText: String? = null
+        var lastProjected: HostConversationProjector.ProjectedFrame? = null
         var frameIndex = 0
 
         val labels = ToolStatusLabels(
@@ -408,34 +467,42 @@ class AgentRuntimeService : Service() {
             TurnFailureCode.IdleTimeout -> getString(AppR.string.ui_home_error_idle_timeout_title)
             TurnFailureCode.OutputTruncated ->
                 getString(AppR.string.ui_home_error_output_truncated_title)
+            TurnFailureCode.Repetition ->
+                getString(AppR.string.ui_home_error_repetition_title)
+
             else -> getString(AppR.string.runtime_error_internal)
         }
 
-        val targetTurnId = agent.conversation.value.turns.lastOrNull()?.id
+        val targetTurnId = turnAgent.conversation.value.turns.lastOrNull()?.id
         Logger.i(LOG_TAG, "executeTurn targetTurnId=$targetTurnId")
 
         try {
             coroutineScope {
                 val conversationJob = launch {
-                    agent.conversation.collect { conv ->
-                        val turn = conv.turns.find { it.id == targetTurnId } ?: conv.turns.lastOrNull()
+                    turnAgent.conversation.collect { conv ->
+                        val turn =
+                            conv.turns.find { it.id == targetTurnId } ?: conv.turns.lastOrNull()
                         if (turn != null) {
-                            val text = HostConversationProjector.render(turn, labels, ::resolveErrorMessage)
-                            if (text != lastRenderedText || !firstFrameSent) {
+                            val projected =
+                                HostConversationProjector.project(turn, ::resolveErrorMessage)
+                            if (projected != lastProjected || !firstFrameSent) {
                                 frameIndex++
-                                lastRenderedText = text
+                                lastProjected = projected
                                 val isFirst = !firstFrameSent
                                 firstFrameSent = true
                                 if (isFirst) {
                                     Logger.i(
                                         LOG_TAG,
-                                        "first render frame elapsedMs=${System.currentTimeMillis() - startedAtMs} textLength=${text.length}"
+                                        "first render frame elapsedMs=${System.currentTimeMillis() - startedAtMs} contentLength=${projected.content.length} thinkingLength=${projected.thinking?.length ?: 0} toolsCount=${projected.tools.size}"
                                     )
                                 }
                                 sendFrame(
                                     callback,
                                     RenderFrame(
-                                        text = text,
+                                        content = projected.content,
+                                        thinking = projected.thinking,
+                                        isThinkingComplete = projected.isThinkingComplete,
+                                        tools = projected.tools,
                                         isFirst = isFirst,
                                         isFinal = false,
                                     ),
@@ -445,25 +512,30 @@ class AgentRuntimeService : Service() {
                     }
                 }
 
-                agent.status.first { it is AgentState.Idle }
+                turnAgent.status.first { state ->
+                    state is AgentState.Idle
+                }
                 conversationJob.cancel()
             }
 
-            val finalTurn = agent.conversation.value.turns.find { it.id == targetTurnId }
-                ?: agent.conversation.value.turns.lastOrNull()
-            val finalText = if (finalTurn != null) {
-                HostConversationProjector.render(finalTurn, labels, ::resolveErrorMessage)
+            val finalTurn = turnAgent.conversation.value.turns.find { it.id == targetTurnId }
+                ?: turnAgent.conversation.value.turns.lastOrNull()
+            val finalProjected = if (finalTurn != null) {
+                HostConversationProjector.project(finalTurn, ::resolveErrorMessage)
             } else {
-                lastRenderedText.orEmpty()
+                lastProjected ?: HostConversationProjector.ProjectedFrame("")
             }
             Logger.i(
                 LOG_TAG,
-                "final render frame elapsedMs=${System.currentTimeMillis() - startedAtMs} textLength=${finalText.length}"
+                "final render frame elapsedMs=${System.currentTimeMillis() - startedAtMs} contentLength=${finalProjected.content.length}"
             )
             sendFrame(
                 callback,
                 RenderFrame(
-                    text = finalText,
+                    content = finalProjected.content,
+                    thinking = finalProjected.thinking,
+                    isThinkingComplete = true,
+                    tools = finalProjected.tools,
                     isFirst = !firstFrameSent,
                     isFinal = true,
                 ),
@@ -487,17 +559,24 @@ class AgentRuntimeService : Service() {
             sendFrame(
                 callback,
                 RenderFrame(
-                    text = e.message ?: getString(AppR.string.runtime_error_internal),
+                    content = e.message ?: getString(AppR.string.runtime_error_internal),
                     isFirst = !firstFrameSent,
                     isFinal = true,
                 ),
             )
         } finally {
+            val convId = turnAgent.conversation.value.id?.value ?: ""
+            // 抢占时旧回合的收尾晚于新回合的 markHostTurnStarted，无条件清理会抹掉新回合的
+            // 宿主标记；只有仍持有 activeTurn 的回合才拥有该标记。
+            val isCurrentTurn = activeTurn.get()?.callback === callback
+            if (isCurrentTurn && convId.isNotBlank()) {
+                TurnNotificationManager.markHostTurnEnded(convId)
+            }
             try {
                 callback.asBinder().unlinkToDeath(deathRecipient, 0)
             } catch (_: Exception) {
             }
-            if (activeTurn.get()?.callback === callback) {
+            if (isCurrentTurn) {
                 activeTurn.set(null)
             }
         }
@@ -513,7 +592,7 @@ class AgentRuntimeService : Service() {
 
     private fun sendError(callback: IRenderFrameCallback, message: String) {
         try {
-            callback.onFrame(RenderFrame(text = message, isFirst = true, isFinal = true))
+            callback.onFrame(RenderFrame(content = message, isFirst = true, isFinal = true))
         } catch (_: DeadObjectException) {
         }
     }
@@ -536,4 +615,62 @@ class AgentRuntimeService : Service() {
         val allowedPackages = setOf(packageName) + HostApp.packageNames.toSet()
         return packages.any { it in allowedPackages }
     }
+}
+
+private const val PREEMPT_TAG = "niki914_zafiro_AgentRuntimeService"
+private const val PREEMPT_MAX_ATTEMPTS = 3
+private const val PREEMPT_STOP_TIMEOUT_MS = 10_000L
+
+/**
+ * 停止正在运行的回合并等它真正落地，再重新发起；有界重试兜住 stop 的异步落地窗口。
+ *
+ * 单独提出是为了可在不依赖 Service 的情况下验证这条重试/取消契约。
+ *
+ * @return 新回合是否已开始。false = 已耗尽重试或草稿为空，调用方应发回忙错误。
+ */
+internal suspend fun preemptPreviousTurn(
+    agent: Agent,
+    maxAttempts: Int = PREEMPT_MAX_ATTEMPTS,
+    stopTimeoutMs: Long = PREEMPT_STOP_TIMEOUT_MS,
+): Boolean {
+    repeat(maxAttempts) { attempt ->
+        val stopStartMs = System.currentTimeMillis()
+        agent.stop()
+        val stopped = withTimeoutOrNull(stopTimeoutMs) {
+            agent.status.first { it is AgentState.Idle }
+        }
+        val stopWaitMs = System.currentTimeMillis() - stopStartMs
+        if (stopped == null) {
+            Logger.w(
+                PREEMPT_TAG,
+                "preempt stop timed out attempt=${attempt + 1} stopWaitMs=$stopWaitMs"
+            )
+            return@repeat
+        }
+        val streamStartMs = System.currentTimeMillis()
+        val result = agent.stream()
+        Logger.i(
+            PREEMPT_TAG,
+            "preempt stage attempt=${attempt + 1} stopWaitMs=$stopWaitMs " +
+                    "streamCallMs=${System.currentTimeMillis() - streamStartMs} result=$result"
+        )
+        when (result) {
+            TurnStart.Started -> {
+                Logger.i(PREEMPT_TAG, "preempt restart started attempt=${attempt + 1}")
+                return true
+            }
+
+            TurnStart.Busy -> Logger.w(
+                PREEMPT_TAG,
+                "preempt restart still busy attempt=${attempt + 1}/$maxAttempts"
+            )
+
+            TurnStart.DraftEmpty -> {
+                Logger.w(PREEMPT_TAG, "preempt restart draftEmpty=true")
+                return false
+            }
+        }
+    }
+    Logger.w(PREEMPT_TAG, "preempt exhausted attempts=$maxAttempts")
+    return false
 }

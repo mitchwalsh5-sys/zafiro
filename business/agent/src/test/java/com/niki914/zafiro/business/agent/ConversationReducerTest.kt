@@ -9,6 +9,7 @@ import com.niki914.zafiro.chat.LlmErrorCode
 import com.niki914.zafiro.chat.LlmStreamEvent
 import com.niki914.zafiro.chat.ToolCallStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -100,11 +101,16 @@ class ConversationReducerTest {
     @Test
     fun retryReusesTheThinkingSlotOfTheFailedAttempt() {
         // mapper 在回合重试时把思考 id 归零（同一 id 再次出现）
-        val firstAttempt = reduce(startTurn("q"), LlmStreamEvent.ThinkingStarted(id = 0, text = "第一次"))
-        val failed = reduce(firstAttempt, LlmStreamEvent.Error(message = null, code = LlmErrorCode.Transport))
+        val firstAttempt =
+            reduce(startTurn("q"), LlmStreamEvent.ThinkingStarted(id = 0, text = "第一次"))
+        val failed = reduce(
+            firstAttempt,
+            LlmStreamEvent.Error(message = null, code = LlmErrorCode.Transport)
+        )
         val secondAttempt = reduce(failed, LlmStreamEvent.ThinkingStarted(id = 0, text = "第二次"))
 
-        val thinking = secondAttempt.conversation.turns.last().blocks.filterIsInstance<TurnBlock.Thinking>()
+        val thinking =
+            secondAttempt.conversation.turns.last().blocks.filterIsInstance<TurnBlock.Thinking>()
         assertEquals(1, thinking.size)
         assertEquals("第二次", thinking.single().text)
     }
@@ -119,7 +125,13 @@ class ConversationReducerTest {
 
         val running = reduce(
             pending,
-            LlmStreamEvent.ToolRunning(call = call(callId = "c1", name = "search", arguments = "{}")),
+            LlmStreamEvent.ToolRunning(
+                call = call(
+                    callId = "c1",
+                    name = "search",
+                    arguments = "{}"
+                )
+            ),
         )
         val tool = running.conversation.turns.last().blocks.single() as TurnBlock.Tool
         assertEquals(blockId, tool.id)
@@ -141,17 +153,31 @@ class ConversationReducerTest {
 
         val firstRunning = reduce(
             secondPending,
-            LlmStreamEvent.ToolRunning(call = call(callId = "c1", name = "search", arguments = """{"q":1}""")),
+            LlmStreamEvent.ToolRunning(
+                call = call(
+                    callId = "c1",
+                    name = "search",
+                    arguments = """{"q":1}"""
+                )
+            ),
         )
         val bothRunning = reduce(
             firstRunning,
-            LlmStreamEvent.ToolRunning(call = call(callId = "c2", name = "search", arguments = """{"q":2}""")),
+            LlmStreamEvent.ToolRunning(
+                call = call(
+                    callId = "c2",
+                    name = "search",
+                    arguments = """{"q":2}"""
+                )
+            ),
         )
 
         val tools = bothRunning.conversation.turns.last().blocks.filterIsInstance<TurnBlock.Tool>()
         assertEquals(2, tools.size)
         assertEquals(listOf("c1", "c2"), tools.map { it.invocation.id })
-        assertEquals(listOf("""{"q":1}""", """{"q":2}"""), tools.map { it.invocation.argumentsJson })
+        assertEquals(
+            listOf("""{"q":1}""", """{"q":2}"""),
+            tools.map { it.invocation.argumentsJson })
         assertEquals(listOf("t0:0", "t0:1"), tools.map { it.id })
     }
 
@@ -163,7 +189,10 @@ class ConversationReducerTest {
         )
         val succeeded = reduce(
             running,
-            LlmStreamEvent.ToolSucceeded(call = call(callId = "c1", name = "search"), outputText = "ok"),
+            LlmStreamEvent.ToolSucceeded(
+                call = call(callId = "c1", name = "search"),
+                outputText = "ok"
+            ),
         )
         val tool = succeeded.conversation.turns.last().blocks.single() as TurnBlock.Tool
         assertEquals(ToolOutcome.Succeeded(resultText = "ok"), tool.outcome)
@@ -174,7 +203,8 @@ class ConversationReducerTest {
         val state = reduce(startTurn("q"), retrying(attempt = 1))
         val replaced = reduce(state, retrying(attempt = 2))
 
-        val retrying = replaced.conversation.turns.last().blocks.filterIsInstance<TurnBlock.Retrying>()
+        val retrying =
+            replaced.conversation.turns.last().blocks.filterIsInstance<TurnBlock.Retrying>()
         assertEquals(1, retrying.size)
         assertEquals(2, retrying.single().attempt)
     }
@@ -232,6 +262,35 @@ class ConversationReducerTest {
         )
     }
 
+    @Test
+    fun addCompactedDivider_appendsCompactedTurnWithPositionalId() {
+        val initial = ConversationReducer.startTurn(Conversation(), "q1", emptyList())
+        val withDivider = ConversationReducer.addCompactedDivider(initial.conversation)
+
+        assertEquals(2, withDivider.conversation.turns.size)
+        val dividerTurn = withDivider.conversation.turns[1]
+        assertEquals(turnIdAt(1), dividerTurn.id)
+        assertEquals("", dividerTurn.userText)
+        assertTrue(dividerTurn.isCompactedDivider)
+        assertFalse(dividerTurn.isCompacting)
+        assertTrue(dividerTurn.blocks.isEmpty())
+    }
+
+    @Test
+    fun addCompactingDivider_and_markCompacted_transitionsStateCorrectly() {
+        val initial = ConversationReducer.startTurn(Conversation(), "q1", emptyList())
+        val compacting = ConversationReducer.addCompactingDivider(initial.conversation)
+
+        assertEquals(2, compacting.conversation.turns.size)
+        assertTrue(compacting.conversation.turns[1].isCompactedDivider)
+        assertTrue(compacting.conversation.turns[1].isCompacting)
+
+        val completed = ConversationReducer.markCompacted(compacting.conversation)
+        assertEquals(2, completed.conversation.turns.size)
+        assertTrue(completed.conversation.turns[1].isCompactedDivider)
+        assertFalse(completed.conversation.turns[1].isCompacting)
+    }
+
     // ── 构造helper ──────────────────────────────────────────────────────────
 
     private fun startTurn(query: String): Reduced =
@@ -248,7 +307,12 @@ class ConversationReducerTest {
         LlmStreamEvent.TextDelta(delta = delta, fullText = delta)
 
     private fun retrying(attempt: Int): LlmStreamEvent.Retrying =
-        LlmStreamEvent.Retrying(attempt = attempt, maxAttempts = 3, delayMs = 100L, reason = "timeout")
+        LlmStreamEvent.Retrying(
+            attempt = attempt,
+            maxAttempts = 3,
+            delayMs = 100L,
+            reason = "timeout"
+        )
 
     private fun call(callId: String?, name: String, arguments: String? = null): ToolCallStatus =
         ToolCallStatus(callId = callId, name = name, label = name, argumentsJson = arguments)

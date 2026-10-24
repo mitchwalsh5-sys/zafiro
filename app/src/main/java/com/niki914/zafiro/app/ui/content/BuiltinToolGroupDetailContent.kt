@@ -20,6 +20,7 @@ import com.niki914.zafiro.app.R
 import com.niki914.zafiro.app.ui.model.BuiltinToolGroupDetailIntent
 import com.niki914.zafiro.app.ui.model.BuiltinToolGroupDetailUiState
 import com.niki914.zafiro.app.ui.model.BuiltinToolGroupDetailViewModel
+import com.niki914.zafiro.app.ui.model.ToolPresentation
 import com.niki914.zafiro.app.ui.nav.BuiltinToolGroupDetailPage
 import com.niki914.zafiro.app.ui.nav.CustomPyToolsPage
 import com.niki914.zafiro.app.ui.nav.ZafiroPage
@@ -69,9 +70,12 @@ private fun builtinToolGroupDetailSpec(uiState: BuiltinToolGroupDetailUiState): 
             SettingsSectionSpec(
                 layout = SettingsSectionLayout.GroupedCard,
                 rows = uiState.members.map { item ->
+                    val displayName =
+                        ToolPresentation.displayNameResOf(item.name)?.let { stringResource(it) }
+                            ?: item.name
                     SettingsRowSpec.Toggle(
                         id = item.name,
-                        title = item.name,
+                        title = displayName,
                         summary = item.description,
                         checked = item.enabled,
                         enabled = !uiState.isSaving,
@@ -80,8 +84,8 @@ private fun builtinToolGroupDetailSpec(uiState: BuiltinToolGroupDetailUiState): 
                     listOf(
                         SettingsRowSpec.Navigation(
                             id = CUSTOM_PY_TOOLS_ENTRY_ROW_ID,
-                            title = stringResource(R.string.builtin_tool_custom_py_tools_entry),
-                            summary = stringResource(R.string.builtin_tool_custom_py_tools_entry_summary),
+                            title = stringResource(R.string.tool_custom_py_tools_entry),
+                            summary = stringResource(R.string.tool_custom_py_tools_entry_summary),
                         ),
                     )
                 } else {
@@ -94,7 +98,7 @@ private fun builtinToolGroupDetailSpec(uiState: BuiltinToolGroupDetailUiState): 
     }
 
     return SettingsPageSpec(
-        description = stringResource(R.string.builtin_tool_page_description),
+        description = stringResource(R.string.tool_page_description),
         sections = sections,
     )
 }
@@ -106,20 +110,26 @@ private fun BuiltinToolGroupDetailContentPreview() {
         ProvideLiquidScreenContentForPreview(topPadding = 0.dp) {
             SettingsSpecPageContent(
                 spec = SettingsPageSpec(
-                    description = stringResource(R.string.builtin_tool_group_dev_tools_summary),
+                    description = stringResource(R.string.tool_group_dev_tools_summary),
                     sections = listOf(
                         SettingsSectionSpec(
                             layout = SettingsSectionLayout.GroupedCard,
                             rows = listOf(
                                 SettingsRowSpec.Toggle(
-                                    id = "terminal",
-                                    title = "terminal",
-                                    summary = "Execute shell commands in an Android terminal environment.",
+                                    id = "shell",
+                                    title = "Shell",
+                                    summary = "Execute commands in a local Android shell environment with persistent session state.",
+                                    checked = true,
+                                ),
+                                SettingsRowSpec.Toggle(
+                                    id = "ssh",
+                                    title = "SSH",
+                                    summary = "Execute commands on remote machines via SSH with persistent session state.",
                                     checked = true,
                                 ),
                                 SettingsRowSpec.Toggle(
                                     id = "execute_python",
-                                    title = "execute_python",
+                                    title = "Python",
                                     summary = "Execute Python code in an Android environment.",
                                     checked = true,
                                 ),

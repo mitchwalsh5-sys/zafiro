@@ -9,7 +9,7 @@ import com.niki914.zafiro.chat.agentic.buildin.BuiltinToolSettingItem
 import com.niki914.zafiro.chat.agentic.buildin.BuiltinToolSettingsManager
 import com.niki914.zafiro.repo.BuiltinToolGroupMode
 import com.niki914.zafiro.repo.BuiltinToolGroups
-import kotlinx.coroutines.CancellationException
+import com.niki914.zafiro.api.util.runCatchingCancellable
 
 // 一级页组行：组状态由成员派生，永不落盘。
 data class BuiltinToolGroupUiItem(
@@ -26,7 +26,7 @@ data class BuiltinToolSettingsUiState(
     val standaloneTools: List<BuiltinToolSettingItem> = emptyList(),
     val isLoading: Boolean = true,
     val isSaving: Boolean = false,
-    @param:StringRes val descriptionResId: Int = R.string.builtin_tool_loading,
+    @param:StringRes val descriptionResId: Int = R.string.tool_loading,
     val descriptionArg: String? = null,
 )
 
@@ -82,11 +82,11 @@ class BuiltinToolSettingsViewModel :
         updateState {
             copy(
                 isLoading = true,
-                descriptionResId = R.string.builtin_tool_loading,
+                descriptionResId = R.string.tool_loading,
                 descriptionArg = null,
             )
         }
-        runCatching {
+        runCatchingCancellable {
             manager.load()
         }.onSuccess { loadedItems ->
             Logger.d(LOG_TAG, "load tools=${loadedItems.size}")
@@ -95,14 +95,11 @@ class BuiltinToolSettingsViewModel :
                 baseState = currentState,
             )
         }.onFailure { throwable ->
-            if (throwable is CancellationException) {
-                throw throwable
-            }
             Logger.w(LOG_TAG, "load failed reason=${throwable.message}")
             updateState {
                 copy(
                     isLoading = false,
-                    descriptionResId = R.string.builtin_tool_load_failed,
+                    descriptionResId = R.string.tool_load_failed,
                     descriptionArg = throwable.message ?: throwable::class.java.simpleName,
                 )
             }
@@ -147,7 +144,7 @@ class BuiltinToolSettingsViewModel :
         write: suspend () -> BuiltinToolResult,
         failLog: (String?) -> Unit,
     ) {
-        runCatching {
+        runCatchingCancellable {
             write()
         }.onSuccess { result ->
             if (result.ok) {
@@ -157,9 +154,6 @@ class BuiltinToolSettingsViewModel :
                 rollbackTo(fallback = fallback, error = result.message)
             }
         }.onFailure { throwable ->
-            if (throwable is CancellationException) {
-                throw throwable
-            }
             failLog(throwable.message)
             rollbackTo(
                 fallback = fallback,
@@ -169,14 +163,11 @@ class BuiltinToolSettingsViewModel :
     }
 
     private suspend fun refreshAfterSave(fallback: BuiltinToolSettingsUiState) {
-        runCatching {
+        runCatchingCancellable {
             manager.load()
         }.onSuccess { loadedItems ->
             applyLoadedItems(loadedItems = loadedItems, baseState = fallback)
-        }.onFailure { throwable ->
-            if (throwable is CancellationException) {
-                throw throwable
-            }
+        }.onFailure {
             applyLoadedItemsFallback(fallback = fallback)
         }
     }
@@ -201,7 +192,7 @@ class BuiltinToolSettingsViewModel :
             fallback.copy(
                 isSaving = false,
                 isLoading = false,
-                descriptionResId = R.string.builtin_tool_save_failed,
+                descriptionResId = R.string.tool_save_failed,
                 descriptionArg = error,
             )
         }
@@ -238,9 +229,9 @@ class BuiltinToolSettingsViewModel :
                 isLoading = false,
                 isSaving = false,
                 descriptionResId = if (isEmpty && !baseState.isLoading) {
-                    R.string.builtin_tool_empty
+                    R.string.tool_empty
                 } else {
-                    R.string.builtin_tool_page_description
+                    R.string.tool_page_description
                 },
             )
         )

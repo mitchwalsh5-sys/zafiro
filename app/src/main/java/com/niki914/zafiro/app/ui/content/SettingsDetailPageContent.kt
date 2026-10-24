@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.niki914.uikit.infra.nav.pageViewModel
+import com.niki914.zafiro.app.ui.content.mcp.McpServiceSettingsContent
 import com.niki914.zafiro.app.ui.content.mcp.McpSettingsContent
 import com.niki914.zafiro.app.ui.model.SettingsViewModel
 import com.niki914.zafiro.app.ui.nav.BuiltinToolGroupDetailPage
@@ -14,6 +15,7 @@ import com.niki914.zafiro.app.ui.nav.SavedConfigDetailPage
 import com.niki914.zafiro.app.ui.nav.SettingsProviderPickPage
 import com.niki914.zafiro.app.ui.nav.SkillDetailPage
 import com.niki914.zafiro.app.ui.nav.TakeoverRuleDetailPage
+import com.niki914.zafiro.app.ui.nav.TextActionDetailPage
 import com.niki914.zafiro.app.ui.nav.ZafiroPage
 import com.niki914.zafiro.app.ui.nav.ZafiroSettingsGroup
 
@@ -46,7 +48,7 @@ fun SettingsDetailPageContent(
         return
     }
 
-    if (group == ZafiroSettingsGroup.BuiltinTools) {
+    if (group == ZafiroSettingsGroup.Tools) {
         BuiltinToolsSettingsContent(
             onOpenGroupDetail = { groupId ->
                 onPush(BuiltinToolGroupDetailPage(groupId))
@@ -73,8 +75,27 @@ fun SettingsDetailPageContent(
         return
     }
 
+    if (group == ZafiroSettingsGroup.Actions) {
+        TextActionsSettingsContent(
+            onOpenActionDetail = { title, index, isCreating ->
+                onPush(TextActionDetailPage(title, index, isCreating))
+            },
+        )
+        return
+    }
+
+    if (group == ZafiroSettingsGroup.McpService) {
+        McpServiceSettingsContent()
+        return
+    }
+
+    if (group == ZafiroSettingsGroup.Theme) {
+        ThemeSettingsContent(onPush = onPush)
+        return
+    }
+
     if (group == ZafiroSettingsGroup.GeneralSettings) {
-        GeneralSettingsContent(onPush = onPush)
+        GeneralSettingsContent()
         return
     }
 
@@ -90,6 +111,11 @@ fun SettingsDetailPageContent(
 
     if (group == ZafiroSettingsGroup.Memory) {
         MemorySettingsContent()
+        return
+    }
+
+    if (group == ZafiroSettingsGroup.RuntimeControl) {
+        RuntimeControlSettingsContent()
         return
     }
 

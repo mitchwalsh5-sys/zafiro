@@ -5,6 +5,7 @@
 *.ipr
 *.iws
 /.worktrees/
+/.personal/
 
 /.pi/*
 !/.pi/skills/
@@ -13,6 +14,8 @@
 .env
 .env.local
 .env.*.local
+*.md
+!/.agents/skills/**/*.md
 
 ### Android / Gradle
 **/.gradle/
@@ -28,6 +31,7 @@ captures/
 *.aab
 *.ap_
 *.dex
+.apk_decs/
 
 *.kotlin_builtins
 

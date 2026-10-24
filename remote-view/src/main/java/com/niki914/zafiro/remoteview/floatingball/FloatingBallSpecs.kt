@@ -4,6 +4,15 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
+ * 按 [FloatingBallTokens.previewMaxChars] 截断预览文本，不切断代理对（emoji 不会被砍成半个字）。
+ */
+internal fun String.clampPreview(maxChars: Int = FloatingBallTokens.previewMaxChars): String {
+    if (length <= maxChars) return this
+    val end = if (Character.isHighSurrogate(this[maxChars - 1])) maxChars - 1 else maxChars
+    return substring(0, end)
+}
+
+/**
  * 悬浮球贴边侧向。
  */
 enum class DockSide {
@@ -38,6 +47,15 @@ object FloatingBallTokens {
     // --- 排版 ---
     const val previewMaxLines = 2
 
+    /**
+     * 悬浮球预览的显示字数上限。
+     *
+     * 与 [com.niki914.zafiro.api.model.AgentState] 的 500 字上游保险丝相互独立：
+     * 那一道是给通知栏 / 宿主共用的全局兜底，这里只是小球卡片两行文字的实际可用量。
+     * 下游超出部分会跑马灯/省略号也无意义，徒增每帧文本排版开销。
+     */
+    const val previewMaxChars = 100
+
     // --- 极值尺寸 (严格受原子尺度与间距约束) ---
     // 展开卡片宽度 = 3 个按钮直径 + 4 个边距 (左右各一外边距 + 两按钮间隙)
     const val expandedWidth = 3 * buttonDiameter + 4 * cardPadding
@@ -56,10 +74,15 @@ object FloatingBallTokens {
     // --- 贴边吸附与淹没 ---
     // 距离屏幕边缘小于该阈值时触发自动吸附收起
     const val snapThreshold = 30
+
     // 靠边时隐藏靠边的部分宽度，屏幕上露出剩余部分作为抓手
     const val submergedOffset = 8
+
     // 脱离吸边区时的安全外距
     const val escapeSnapDistance = 31
+
+    // 吸附停稳后的不透明度：由吸附动画插值，拖动过程中不生效
+    const val submergedAlpha = 0.6f
 
     // --- Dp 转换便捷访问 ---
     val buttonDiameterDp: Dp get() = buttonDiameter.dp
@@ -139,7 +162,12 @@ object FloatingBallGeometry {
     /**
      * 计算指定贴边侧向下的稳定停靠坐标（位于贴边吸附阈值外，不触发自动淹没）。
      */
-    fun calculateStableDockX(dockSide: DockSide, screenWidthPx: Int, ballWidthPx: Int, escapeDistancePx: Int): Int {
+    fun calculateStableDockX(
+        dockSide: DockSide,
+        screenWidthPx: Int,
+        ballWidthPx: Int,
+        escapeDistancePx: Int
+    ): Int {
         return if (dockSide.isRight) {
             screenWidthPx - ballWidthPx - escapeDistancePx
         } else {

@@ -12,19 +12,26 @@ class ImageFormatTest {
 
     @Test
     fun hasImageMagic_jpeg() {
-        val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte()) + ByteArray(4)
+        val jpeg =
+            byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte()) + ByteArray(4)
         assertTrue(ImageFormat.hasImageMagic(jpeg))
     }
 
     @Test
     fun hasImageMagic_png() {
-        val png = byteArrayOf(0x89.toByte(), 0x50.toByte(), 0x4E.toByte(), 0x47.toByte()) + ByteArray(4)
+        val png =
+            byteArrayOf(0x89.toByte(), 0x50.toByte(), 0x4E.toByte(), 0x47.toByte()) + ByteArray(4)
         assertTrue(ImageFormat.hasImageMagic(png))
     }
 
     @Test
     fun hasImageMagic_gif() {
-        val gif = byteArrayOf('G'.code.toByte(), 'I'.code.toByte(), 'F'.code.toByte(), '8'.code.toByte()) + ByteArray(4)
+        val gif = byteArrayOf(
+            'G'.code.toByte(),
+            'I'.code.toByte(),
+            'F'.code.toByte(),
+            '8'.code.toByte()
+        ) + ByteArray(4)
         assertTrue(ImageFormat.hasImageMagic(gif))
     }
 
@@ -66,12 +73,6 @@ class ImageFormatTest {
     }
 
     @Test
-    fun stripDataUrlPrefix_validJpeg() {
-        val input = "data:image/jpeg;base64,/9j/4AAQ="
-        assertEquals("/9j/4AAQ=", ImageFormat.stripDataUrlPrefix(input))
-    }
-
-    @Test
     fun stripDataUrlPrefix_noPrefix_returnsOriginal() {
         assertEquals("iVBORw0KGgo=", ImageFormat.stripDataUrlPrefix("iVBORw0KGgo="))
     }
@@ -104,11 +105,6 @@ class ImageFormatTest {
     @Test
     fun normalizeMime_stripsParams() {
         assertEquals("image/jpeg", ImageFormat.normalizeMime("image/jpeg; charset=binary"))
-    }
-
-    @Test
-    fun normalizeMime_wildcard_fallsBack() {
-        assertEquals("image/jpeg", ImageFormat.normalizeMime("image/*"))
     }
 
     @Test

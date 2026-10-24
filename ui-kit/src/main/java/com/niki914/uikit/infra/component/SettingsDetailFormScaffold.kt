@@ -6,8 +6,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -31,8 +33,12 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.niki914.uikit.infra.ReportTitleBarCollapsed
+import com.niki914.uikit.infra.liquidScreenActionButtonBottomPadding
 import com.niki914.uikit.infra.liquidScreenBottomPadding
 import com.niki914.uikit.infra.liquidScreenTopPadding
+import com.niki914.uikit.infra.scrollbar.LiquidScrollableContainer
+import com.niki914.uikit.infra.scrollbar.rememberLiquidOverscrollController
+import com.niki914.uikit.infra.scrollbar.rememberScrollStateAdapter
 
 /** 输入框底边与键盘顶边之间保留的边距。 */
 private val SettingsFormAvoidanceMargin = 12.dp
@@ -51,7 +57,7 @@ private const val SettledFramesToStop = 3
  * @param contentBottomPadding 滚动内容区底部安全距离。null（默认）走壳层下发的
  * `liquidScreenBottomPadding()`；非空则覆盖重写。
  * @param actionButtonBottomPadding 吸底按钮的底边距。null（默认）走壳层下发的
- * `liquidScreenBottomPadding()`；非空则覆盖重写。与 `contentBottomPadding`
+ * `liquidScreenActionButtonBottomPadding()`；非空则覆盖重写。与 `contentBottomPadding`
  * 分开暴露：内容区预留与按钮位置是两个独立诉求。
  */
 @Composable
@@ -62,6 +68,9 @@ fun SettingsDetailFormScaffold(
     description: String? = null,
     inlineErrorText: String? = null,
     actionEnabled: Boolean = true,
+    secondaryActionText: String? = null,
+    secondaryActionEnabled: Boolean = true,
+    onSecondaryActionClick: (() -> Unit)? = null,
     onBackgroundTap: (() -> Unit)? = null,
     contentBottomPadding: Dp? = null,
     actionButtonBottomPadding: Dp? = null,
@@ -73,10 +82,14 @@ fun SettingsDetailFormScaffold(
 ) {
     val scrollState =
         rememberSaveable(saver = ScrollState.Saver, init = { ScrollState(initial = 0) })
+    val overscrollController = rememberLiquidOverscrollController()
     // 表单脚手架含多行输入框（如自定义 Python 代码），BasicTextField 行数封顶后
     // 自带的内部滚动会作为已消费增量冒泡到壳层，被误计入页面滚离量（页面停在顶部、
-    // 顶栏却变实体）。用自身的滚动状态精确接管，输入框内部滚动不再参与。
-    ReportTitleBarCollapsed { scrollState.value > 0 }
+    // 顶栏却变实体）。用自身的滚动状态与超滚精确接管，输入框内部滚动不再参与。
+    ReportTitleBarCollapsed {
+        scrollState.value > 0 ||
+            overscrollController.overscrollOffset.value < 0f
+    }
 
     // 键盘避让：表单输入框展开并获焦时，把内容滚到键盘之上。
     // 只收窄视口是不够的——视口变矮只是提供了可滚余量，没有任何东西会去滚它；
@@ -131,7 +144,7 @@ fun SettingsDetailFormScaffold(
 
     val resolvedContentBottomPadding = contentBottomPadding ?: liquidScreenBottomPadding()
     val resolvedActionButtonBottomPadding =
-        actionButtonBottomPadding ?: liquidScreenBottomPadding()
+        actionButtonBottomPadding ?: liquidScreenActionButtonBottomPadding()
     val contentModifier = if (onBackgroundTap != null) {
         Modifier.pointerInput(onBackgroundTap) {
             detectTapGestures(onTap = { onBackgroundTap() })
@@ -140,71 +153,120 @@ fun SettingsDetailFormScaffold(
         Modifier
     }
 
+    val scrollbarState = rememberScrollStateAdapter(scrollState, overscrollController)
+    val bottomReservedForScrollbar = resolvedActionButtonBottomPadding +
+            SettingsDetailPageDefaults.ActionButtonReservedHeight +
+            SettingsDetailPageDefaults.RootVerticalSpacing
+
     Box(
         modifier = modifier
             .fillMaxSize(),
     ) {
-        Column(
-            modifier = contentModifier
-                .fillMaxSize()
-                // 键盘弹起时收窄本滑动列的可视区（inset 加在 verticalScroll 之前，
-                // 只缩滚动视口，不缩吸底按钮）：视口变矮后，内容可以真实滚动到
-                // 键盘上方，上方的卡片也能滚回来；顶栏随之按真实滚动变实体。
-                .imePadding()
-                .verticalScroll(scrollState)
-                .padding(
-                    horizontal = SettingsDetailPageDefaults.HorizontalPadding,
-                )
-                .padding(
-                    top = liquidScreenTopPadding(
-                        SettingsDetailPageDefaults.VerticalPadding
-                    ),
-                    // 底部预留必须 ≥ 按钮位高（底边距 + 按钮高），否则最后一张卡片会被吸底按钮盖住；
-                    // 与下方按钮的 bottom 同源解析，两处必须一起改。
-                    bottom = resolvedContentBottomPadding +
-                            SettingsDetailPageDefaults.RootVerticalSpacing +
-                            SettingsDetailPageDefaults.ActionButtonReservedHeight,
-                ),
-            verticalArrangement = Arrangement.spacedBy(
-                SettingsDetailPageDefaults.ContentVerticalSpacing,
-            ),
+        LiquidScrollableContainer(
+            state = scrollbarState,
+            overscrollController = overscrollController,
+            topClearance = liquidScreenTopPadding(SettingsDetailPageDefaults.VerticalPadding),
+            bottomClearance = bottomReservedForScrollbar,
+            modifier = Modifier.fillMaxSize(),
         ) {
-            if (!description.isNullOrBlank()) {
-                PageDescriptionText(text = description)
-            }
-            CompositionLocalProvider(
-                LocalSettingsFormKeyboardAvoidance provides keyboardAvoidance,
-            ) {
-                content()
-            }
-            if (!inlineErrorText.isNullOrBlank()) {
-                Text(
-                    text = inlineErrorText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(
-                        horizontal = SettingsDetailPageDefaults.InlineErrorHorizontalPadding,
+            Column(
+                modifier = contentModifier
+                    .fillMaxSize()
+                    // 键盘弹起时收窄本滑动列的可视区（inset 加在 verticalScroll 之前，
+                    // 只缩滚动视口，不缩吸底按钮）：视口变矮后，内容可以真实滚动到
+                    // 键盘上方，上方的卡片也能滚回来；顶栏随之按真实滚动变实体。
+                    .imePadding()
+                    .verticalScroll(scrollState)
+                    .padding(
+                        horizontal = SettingsDetailPageDefaults.HorizontalPadding,
+                    )
+                    .padding(
+                        top = liquidScreenTopPadding(
+                            SettingsDetailPageDefaults.VerticalPadding
+                        ),
+                        // 底部预留必须 ≥ 按钮位高（底边距 + 按钮高），否则最后一张卡片会被吸底按钮盖住；
+                        // 与下方按钮的 bottom 同源解析，两处必须一起改。
+                        bottom = resolvedContentBottomPadding +
+                                SettingsDetailPageDefaults.RootVerticalSpacing +
+                                SettingsDetailPageDefaults.ActionButtonReservedHeight,
                     ),
-                )
+                verticalArrangement = Arrangement.spacedBy(
+                    SettingsDetailPageDefaults.ContentVerticalSpacing,
+                ),
+            ) {
+                if (!description.isNullOrBlank()) {
+                    PageDescriptionText(text = description)
+                }
+                CompositionLocalProvider(
+                    LocalSettingsFormKeyboardAvoidance provides keyboardAvoidance,
+                ) {
+                    content()
+                }
+                if (!inlineErrorText.isNullOrBlank()) {
+                    Text(
+                        text = inlineErrorText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(
+                            horizontal = SettingsDetailPageDefaults.InlineErrorHorizontalPadding,
+                        ),
+                    )
+                }
             }
         }
 
-        TintLiquidButton(
-            text = actionText,
-            enabled = actionEnabled,
-            onClick = onActionClick,
-            buttonHeight = 56.dp,
-            darkContainerColor = actionButtonDarkContainerColor,
-            lightContainerColor = actionButtonLightContainerColor,
-            darkContentColor = actionButtonDarkContentColor,
-            lightContentColor = actionButtonLightContentColor,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(
-                    start = SettingsDetailPageDefaults.HorizontalPadding,
-                    end = SettingsDetailPageDefaults.HorizontalPadding,
-                    bottom = resolvedActionButtonBottomPadding,
-                ),
-        )
+        if (secondaryActionText != null && onSecondaryActionClick != null) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(
+                        start = SettingsDetailPageDefaults.HorizontalPadding,
+                        end = SettingsDetailPageDefaults.HorizontalPadding,
+                        bottom = resolvedActionButtonBottomPadding,
+                    ),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                TintLiquidButton(
+                    text = actionText,
+                    enabled = actionEnabled,
+                    onClick = onActionClick,
+                    buttonHeight = SettingsDetailPageDefaults.ActionButtonReservedHeight,
+                    darkContainerColor = actionButtonDarkContainerColor,
+                    lightContainerColor = actionButtonLightContainerColor,
+                    darkContentColor = actionButtonDarkContentColor,
+                    lightContentColor = actionButtonLightContentColor,
+                    modifier = Modifier.weight(1f),
+                )
+                TintLiquidButton(
+                    text = secondaryActionText,
+                    enabled = secondaryActionEnabled,
+                    onClick = onSecondaryActionClick,
+                    buttonHeight = SettingsDetailPageDefaults.ActionButtonReservedHeight,
+                    darkContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    lightContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        } else {
+            TintLiquidButton(
+                text = actionText,
+                enabled = actionEnabled,
+                onClick = onActionClick,
+                buttonHeight = SettingsDetailPageDefaults.ActionButtonReservedHeight,
+                darkContainerColor = actionButtonDarkContainerColor,
+                lightContainerColor = actionButtonLightContainerColor,
+                darkContentColor = actionButtonDarkContentColor,
+                lightContentColor = actionButtonLightContentColor,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(
+                        start = SettingsDetailPageDefaults.HorizontalPadding,
+                        end = SettingsDetailPageDefaults.HorizontalPadding,
+                        bottom = resolvedActionButtonBottomPadding,
+                    ),
+            )
+        }
     }
 }

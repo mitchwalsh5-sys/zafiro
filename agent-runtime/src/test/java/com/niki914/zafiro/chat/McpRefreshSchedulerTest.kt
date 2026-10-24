@@ -4,12 +4,14 @@ import com.niki914.okia.Okia
 import com.niki914.okia.OkiaConfig
 import com.niki914.okia.TurnOptions
 import com.niki914.okia.conversation.Conversation
+import com.niki914.okia.conversation.ConversationEntry
 import com.niki914.okia.conversation.SessionSnapshot
 import com.niki914.okia.event.TurnEvent
 import com.niki914.okia.loop.TurnResult
 import com.niki914.okia.mcp.McpDiscoverySnapshot
 import com.niki914.okia.mcp.McpRefreshResult
 import com.niki914.okia.message.ContentBlock
+import com.niki914.okia.message.Message
 import com.niki914.zafiro.chat.util.SilentLoggerRule
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -23,6 +25,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
+import java.io.IOException
 
 /**
  * McpRefreshScheduler 单测（问题 4 修复，虚拟时间）：失败退避重试、
@@ -58,6 +61,8 @@ class McpRefreshSchedulerTest {
             onEvent: suspend (TurnEvent) -> Unit,
         ): TurnResult = error("not used")
 
+        override suspend fun append(message: Message): ConversationEntry = error("not used")
+
         override suspend fun stop() = error("not used")
         override suspend fun rewind(entryId: String) = error("not used")
         override suspend fun export(): SessionSnapshot = error("not used")
@@ -76,7 +81,7 @@ class McpRefreshSchedulerTest {
         val okia = FakeOkia(
             refreshResult = {
                 call++
-                if (call == 1) throw java.io.IOException("connection refused")
+                if (call == 1) throw IOException("connection refused")
                 McpRefreshResult(listOf("s1"), emptyList())
             }
         )

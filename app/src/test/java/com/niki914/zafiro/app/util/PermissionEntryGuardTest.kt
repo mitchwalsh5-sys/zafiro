@@ -1,9 +1,9 @@
 package com.niki914.zafiro.app.util
 
-import java.io.File
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.io.File
 
 /**
  * 权限入口统一守卫：业务代码禁止直连原生权限 API。
@@ -42,6 +42,10 @@ class PermissionEntryGuardTest {
         "\"su\"" to listOf(
             AllowRule("seed_py_launch_wechat.py", ""),
             AllowRule("seed_py_install_apk.py", ""),
+            // onboarding 安全规则的展示文案，不是 su 调用
+            AllowRule("OnboardingPreferencesViewModel.kt", "DefaultSecurityPatterns"),
+            // 执行规则里的提权关键字，用于匹配而非调用 su
+            AllowRule("ToolExecutionPreflight.kt", "SU_TOKEN"),
         ),
         // shell 通道授权命令只出现在 business:permission 内部
         "settings put secure" to listOf(
@@ -57,15 +61,15 @@ class PermissionEntryGuardTest {
 
     /** 允许名单之外的任何命中都算私调。扫描范围：全仓 main 源码（build/ 与测试除外）。 */
     private val privateCallPatterns = allowlist.keys +
-        "requestPermissions(" +
-        "Runtime.getRuntime().exec(" +
-        "Settings.Secure.putString" +
-        "Shell.getShell(" +
-        "Shell.cmd(" +
-        "Shell.isAppGrantedRoot" +
-        "com.topjohnwu.superuser" +
-        "rikka.shizuku" +
-        "Shizuku.requestPermission"
+            "requestPermissions(" +
+            "Runtime.getRuntime().exec(" +
+            "Settings.Secure.putString" +
+            "Shell.getShell(" +
+            "Shell.cmd(" +
+            "Shell.isAppGrantedRoot" +
+            "com.topjohnwu.superuser" +
+            "rikka.shizuku" +
+            "Shizuku.requestPermission"
 
     @Test
     fun `no private permission calls outside allowlist`() {
@@ -75,7 +79,7 @@ class PermissionEntryGuardTest {
             .filter { it.isFile }
             .filter { it.extension in setOf("kt", "java", "py", "xml") }
             .filter { "src/main/" in it.path || "src/main" in it.path || it.name == "AndroidManifest.xml" }
-            .filterNot { "/build/" in it.path }
+            .filterNot { "/build/" in it.path || "/.apk_decs/" in it.path }
             .forEach { file ->
                 val relative = file.relativeTo(repoRoot).path
                 file.readLines().forEachIndexed { index, line ->
@@ -88,7 +92,7 @@ class PermissionEntryGuardTest {
             }
         assertTrue(
             "业务方直连原生权限 API（收编进 PermissionManager 或加白名单并在 PR 说明）：\n" +
-                violations.joinToString("\n"),
+                    violations.joinToString("\n"),
             violations.isEmpty(),
         )
     }
@@ -128,7 +132,7 @@ class PermissionEntryGuardTest {
         if ("/src/test/" in relative) return true
         return allowlist[pattern].orEmpty().any { rule ->
             relative.endsWith(rule.fileSuffix) &&
-                (rule.marker.isEmpty() || rule.marker in line)
+                    (rule.marker.isEmpty() || rule.marker in line)
         }
     }
 

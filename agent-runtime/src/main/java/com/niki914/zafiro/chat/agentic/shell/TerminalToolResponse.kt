@@ -3,6 +3,7 @@ package com.niki914.zafiro.chat.agentic.shell
 import com.niki914.libterm.TerminalFailure
 import com.niki914.libterm.TerminalIdentity
 import com.niki914.libterm.runtime.CommandResult
+import com.niki914.zafiro.chat.agentic.PreflightDecision
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -96,10 +97,10 @@ object TerminalToolResponse {
         return JsonObject(mapOf("closed" to JsonPrimitive(true))).toString()
     }
 
-    fun policyBlocked(decision: ShellCommandPolicyDecision, elapsedSeconds: Long = 0L): String {
+    fun policyBlocked(decision: PreflightDecision, elapsedSeconds: Long = 0L): String {
         return error(
             code = "COMMAND_BLOCKED",
-            message = decision.reason.ifBlank { "Command blocked by safety policy." },
+            message = decision.reason.ifBlank { "Command blocked by execution rule." },
             elapsedSeconds = elapsedSeconds,
             extra = mapOf(
                 "policy_code" to JsonPrimitive(decision.code),
@@ -114,6 +115,35 @@ object TerminalToolResponse {
         return error(
             code = "SESSION_NOT_FOUND",
             message = "Session '$session' not found. Use the session_id returned by a background command. Do not pass identity names such as user or root.",
+        )
+    }
+
+    /** 掉线/被回收的僵尸会话：给可行动的错误，而不是谎报 connected 或白等超时。 */
+    fun sessionGone(session: String): String {
+        return error(
+            code = "INVALID_REQUEST",
+            message = "Session '$session' is gone (connection dropped or closed elsewhere). " +
+                    "Reconnect by passing 'host'/'username'/'password' again; add the same 'alias' to keep the alias. " +
+                    "Run action='close' on it if you only want to drop the registration.",
+        )
+    }
+
+    /** 会话身份在开辟时固化：显式指定的会话与本次请求身份不一致时报错，不静默复用。 */
+    fun identityMismatch(label: String, actual: String, requested: String): String {
+        return error(
+            code = "INVALID_REQUEST",
+            message = "Session '$label' runs as '$actual', not '$requested'. The identity is fixed " +
+                    "when the session is created and cannot change. Open a new session with a different " +
+                    "'alias' to run as '$requested', or drop 'identity' to reuse this one.",
+        )
+    }
+
+    fun sessionBusyWithPendingCommand(session: String, abandonHint: String): String {
+        return error(
+            code = "SESSION_BUSY",
+            message = "Session '$session' still has a command in flight. Collect its output with " +
+                    "action=\"read\" first. If that command is stuck, $abandonHint Sending a command now " +
+                    "would make both outputs interleave and get lost.",
         )
     }
 

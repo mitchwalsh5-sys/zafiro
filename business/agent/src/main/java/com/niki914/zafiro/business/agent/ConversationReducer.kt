@@ -85,6 +85,47 @@ internal object ConversationReducer {
         )
     }
 
+    /**
+     * 追加处于压缩中状态的上下文分割线回合。
+     */
+    fun addCompactingDivider(conversation: Conversation): Reduced {
+        val cleared = conversation.copy(
+            turns = conversation.turns.map { turn ->
+                turn.copy(blocks = turn.blocks.filterNot { it is TurnBlock.Failure || it is TurnBlock.Retrying })
+            },
+        )
+        return Reduced(
+            conversation = cleared.copy(
+                turns = cleared.turns + ConversationTurn(
+                    id = turnIdAt(cleared.turns.size),
+                    userText = "",
+                    isCompactedDivider = true,
+                    isCompacting = true,
+                ),
+            ),
+        )
+    }
+
+    /**
+     * 将最后一条压缩分割线标记为完成（已压缩）。
+     */
+    fun markCompacted(conversation: Conversation): Reduced {
+        val turns = conversation.turns.toMutableList()
+        val index = turns.indexOfLast { it.isCompactedDivider }
+        if (index >= 0) {
+            turns[index] = turns[index].copy(isCompacting = false)
+        }
+        return Reduced(conversation.copy(turns = turns))
+    }
+
+    /**
+     * 追加上下文压缩完成分割线回合。
+     */
+    fun addCompactedDivider(conversation: Conversation): Reduced {
+        val compacting = addCompactingDivider(conversation)
+        return markCompacted(compacting.conversation)
+    }
+
     /** 折叠一条事件。没有活跃回合（回合列表为空）时原样返回。 */
     fun reduce(state: Reduced, event: LlmStreamEvent): Reduced {
         val turnIndex = state.conversation.turns.lastIndex
@@ -103,7 +144,13 @@ internal object ConversationReducer {
                 thinking(state, turnIndex, event.id, event.text, isComplete = true)
 
             is LlmStreamEvent.ToolPending ->
-                state.upsertTool(turnIndex, turn.clearRetrying(), event.call, outcome = null, pending = true)
+                state.upsertTool(
+                    turnIndex,
+                    turn.clearRetrying(),
+                    event.call,
+                    outcome = null,
+                    pending = true
+                )
 
             is LlmStreamEvent.ToolRunning ->
                 state.upsertTool(turnIndex, turn.clearRetrying(), event.call, outcome = null)
@@ -229,12 +276,12 @@ internal object ConversationReducer {
             else -> pendingToolIds.firstNotNullOfOrNull { pendingId ->
                 turn.blocks.indexOfFirst { block ->
                     block is TurnBlock.Tool && block.id == pendingId &&
-                        block.invocation.argumentsJson == null && block.invocation.name == call.name
+                            block.invocation.argumentsJson == null && block.invocation.name == call.name
                 }.takeIf { it >= 0 }
             } ?: turn.blocks.indexOfLast { block ->
                 call.callId == null && block is TurnBlock.Tool &&
-                    block.invocation.id == block.invocation.name &&
-                    block.invocation.argumentsJson == null && block.invocation.name == call.name
+                        block.invocation.id == block.invocation.name &&
+                        block.invocation.argumentsJson == null && block.invocation.name == call.name
             }
         }
         if (index < 0) {
@@ -345,6 +392,7 @@ internal object ConversationReducer {
         LlmErrorCode.ToolExecutionFailed -> TurnFailureCode.ToolExecutionFailed
         LlmErrorCode.IdleTimeout -> TurnFailureCode.IdleTimeout
         LlmErrorCode.OutputTruncated -> TurnFailureCode.OutputTruncated
+        LlmErrorCode.Repetition -> TurnFailureCode.Repetition
         // 契约里没有 TurnConflict：已有活跃回合由 stream() 的返回值同步告知
         LlmErrorCode.TurnConflict -> null
     }

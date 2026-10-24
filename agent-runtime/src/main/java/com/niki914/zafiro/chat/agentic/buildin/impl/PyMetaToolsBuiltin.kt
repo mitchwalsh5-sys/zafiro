@@ -1,6 +1,7 @@
 package com.niki914.zafiro.chat.agentic.buildin.impl
 
 import com.niki914.logging.Logger
+import com.niki914.zafiro.chat.agentic.ToolExecutionPreflight
 import com.niki914.zafiro.chat.agentic.buildin.BuiltinTool
 import com.niki914.zafiro.chat.agentic.buildin.BuiltinToolRegistry
 import com.niki914.zafiro.chat.agentic.buildin.BuiltinToolRequest
@@ -8,10 +9,11 @@ import com.niki914.zafiro.chat.agentic.buildin.BuiltinToolResult
 import com.niki914.zafiro.chat.agentic.python.CustomPyToolHarness
 import com.niki914.zafiro.chat.agentic.python.PyExecOutput
 import com.niki914.zafiro.chat.agentic.python.PyRuntime
-import com.niki914.zafiro.util.ToolOutputTruncator
-import com.niki914.zafiro.chat.agentic.shell.ShellCommandSafetyPolicy
 import com.niki914.zafiro.settings.RuntimeEnvironment
 import com.niki914.zafiro.settings.model.RuntimeCustomPyTool
+import com.niki914.zafiro.util.ToolOutputTruncator
+import com.niki914.zafiro.api.util.runCatchingCancellable
+import com.niki914.zafiro.api.util.tryOrNull
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.serialization.json.Json
@@ -24,6 +26,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import java.io.File
 
 /**
  * py_meta_tools 元工具（用来创造工具的工具）：CustomPyTool 注册表的增删改查 + 试运行。
@@ -36,10 +39,10 @@ import kotlinx.serialization.json.put
  */
 class PyMetaToolsBuiltin(
     private val exec: suspend (code: String, timeoutMs: Long) -> PyExecOutput = PyRuntime::exec,
-    private val safetyPolicy: ShellCommandSafetyPolicy = ShellCommandSafetyPolicy(),
+    private val preflight: ToolExecutionPreflight = ToolExecutionPreflight(),
     private val reservedNames: Set<String>? = null,
     /** 截断导出目录，测试可注入临时目录；默认 filesDir/tool_output。 */
-    private val exportDir: java.io.File? = ToolOutputTruncator.defaultExportDir(),
+    private val exportDir: File? = ToolOutputTruncator.defaultExportDir(),
 ) : BuiltinTool() {
 
     override val name: String = "py_meta_tools"
@@ -62,13 +65,12 @@ Store the result of a run by printing from main; stdout is returned.
     override val inputSchemaJson: String? get() = SCHEMA
 
     override suspend fun invoke(request: BuiltinToolRequest): BuiltinToolResult {
-        val args = try {
+        val args = runCatchingCancellable {
             parseArguments(request.argumentsJson)
-        } catch (throwable: Throwable) {
-            if (throwable is CancellationException) throw throwable
+        }.getOrElse { throwable ->
             return invalidArguments(throwable.message ?: "Invalid JSON.")
         }
-        return try {
+        return runCatchingCancellable {
             when (args.action) {
                 "list" -> list()
                 "read" -> read(args.name)
@@ -81,8 +83,7 @@ Store the result of a run by printing from main; stdout is returned.
                     hint = "Use one of: list, read, write, delete, test.",
                 )
             }
-        } catch (throwable: Throwable) {
-            if (throwable is CancellationException) throw throwable
+        }.getOrElse { throwable ->
             Logger.w(LOG_TAG, "py_meta_tools ${args.action} failed: ${throwable.message}")
             BuiltinToolResult.failure(
                 code = "PY_META_TOOLS_ERROR",
@@ -140,10 +141,10 @@ Store the result of a run by printing from main; stdout is returned.
                 fieldErrors = mapOf("name" to "reserved"),
             )
         }
-        safetyPolicy.evaluate(code, toolName = name).takeIf { !it.allowed }?.let { decision ->
+        preflight.evaluate(code, toolName = name).takeIf { !it.allowed }?.let { decision ->
             return BuiltinToolResult.failure(
                 code = "COMMAND_BLOCKED",
-                message = decision.reason.ifBlank { "Code blocked by safety policy." },
+                message = decision.reason.ifBlank { "Code blocked by execution rule." },
             )
         }
 
@@ -204,13 +205,6 @@ Store the result of a run by printing from main; stdout is returned.
                     message = "Provide either 'code' (draft test) or 'name' (existing tool), not both.",
                 )
             }
-            safetyPolicy.evaluate(draftCode, toolName = name).takeIf { !it.allowed }
-                ?.let { decision ->
-                    return BuiltinToolResult.failure(
-                        code = "COMMAND_BLOCKED",
-                        message = decision.reason.ifBlank { "Code blocked by safety policy." },
-                    )
-                }
             code = draftCode
             timeoutMs = (args.timeoutMs ?: RuntimeCustomPyTool.DEFAULT_CUSTOM_PY_TOOL_TIMEOUT_MS)
                 .coerceIn(1_000L, RuntimeCustomPyTool.MAX_CUSTOM_PY_TOOL_TIMEOUT_MS)
@@ -220,6 +214,17 @@ Store the result of a run by printing from main; stdout is returned.
             timeoutMs = (args.timeoutMs ?: tool.timeoutMs)
                 .coerceIn(1_000L, RuntimeCustomPyTool.MAX_CUSTOM_PY_TOOL_TIMEOUT_MS)
         }
+
+        // 草稿与已存工具都实际跑了，同等过 preflight（与 CustomPyToolExecutor 同口径）
+        val evidence = code + "\n" + args.argsJson
+        preflight.evaluate(evidence, toolName = name).takeIf { !it.allowed }
+            ?.let { decision ->
+                return BuiltinToolResult.failure(
+                    code = "COMMAND_BLOCKED",
+                    message = decision.reason.ifBlank { "Code blocked by execution rule." },
+                )
+            }
+        preflight.ensurePathAccess(evidence)
 
         return try {
             val result = exec(CustomPyToolHarness.buildRunner(code, args.argsJson), timeoutMs)
@@ -239,7 +244,7 @@ Store the result of a run by printing from main; stdout is returned.
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (t: Throwable) {
+        } catch (t: Throwable) { // githooks:ignore bare-catch 超时转为业务失败，其余取消正常放行
             BuiltinToolResult.failure(
                 code = "PYTHON_ERROR",
                 message = t.message ?: "Test run failed.",
@@ -269,25 +274,23 @@ Store the result of a run by printing from main; stdout is returned.
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (t: Throwable) {
+        } catch (t: Throwable) { // githooks:ignore bare-catch 自省超时转为结构化错误，其余取消正常放行
             return Introspection(
                 null,
                 null,
                 IntrospectionError("INTROSPECTION_FAILED", t.message ?: "Signature check failed.")
             )
         }
-        val json = try {
+        val json = tryOrNull {
             Json.parseToJsonElement(output.trim()).jsonObject
-        } catch (_: Exception) {
-            return Introspection(
-                null,
-                null,
-                IntrospectionError(
-                    "INTROSPECTION_FAILED",
-                    "Unexpected checker output: ${output.take(200)}"
-                )
+        } ?: return Introspection(
+            null,
+            null,
+            IntrospectionError(
+                "INTROSPECTION_FAILED",
+                "Unexpected checker output: ${output.take(200)}"
             )
-        }
+        )
         if (json["error"] != null) {
             val code = json["error"]!!.jsonPrimitive.contentOrNull ?: "INVALID_CODE"
             val line = json["line"]?.jsonPrimitive?.longOrNull
@@ -390,7 +393,7 @@ Store the result of a run by printing from main; stdout is returned.
                 },
                 "name": {"type": "string", "description": "Tool name for read/write/delete/test. A py_ prefix is added automatically."},
                 "code": {"type": "string", "description": "Python source defining main(**kwargs), for write; or draft code for test."},
-                "args": {"type": "object", "description": "Sample arguments for action=test."},
+                "args": {"type": "object", "description": "Sample arguments for action=test.", "required": []},
                 "enabled": {"type": "boolean", "description": "write only: enable/disable the tool (default keeps current value)."},
                 "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 120000, "description": "Execution timeout (default 30000)."}
               },

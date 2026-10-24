@@ -2,15 +2,18 @@ package com.niki914.zafiro.app
 
 import android.app.ActivityManager
 import android.app.Application
-import android.content.Context
 import androidx.appcompat.app.AppCompatDelegate
 import com.google.android.material.color.DynamicColors
 import com.niki914.logging.Logger
 import com.niki914.xposed.api.util.ContextProvider
-import com.niki914.zafiro.app.conversation.ConversationPersister
+import com.niki914.zafiro.api.McpService
 import com.niki914.zafiro.app.conversation.ConversationRepo
+import com.niki914.zafiro.app.crash.CrashRecorder
+import com.niki914.zafiro.app.debug.DebugLogFile
 import com.niki914.zafiro.app.notification.ResidentNotificationManager
+import com.niki914.zafiro.app.notification.TurnNotificationManager
 import com.niki914.zafiro.app.overlay.FloatingBallOverlayManager
+import com.niki914.zafiro.app.wakelock.AgentWakeLockController
 import com.niki914.zafiro.business.permission.Permission
 import com.niki914.zafiro.business.permission.PermissionManager
 import com.niki914.zafiro.business.permission.PermissionState
@@ -25,6 +28,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import com.niki914.zafiro.api.AgentControl
+import com.niki914.zafiro.api.AgentManager
+import com.niki914.zafiro.api.model.isRunning
 import java.io.File
 
 class App : Application() {
@@ -33,17 +41,17 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashRecorder.install(this)
         // 日志 debug 门控：release 构建 DEBUG/VERBOSE 全停，仅 INFO+ 输出
         Logger.setDebugProvider { BuildConfig.DEBUG }
+        // 调试构建额外把日志落到 filesDir/logs/（release 不装文件后端）
+        DebugLogFile.install(this)
         // 非主进程（目前只有 `:python`）不初始化主进程状态：上下文与持久化只属于主进程
         //（否则 ContextProvider 从未 provide，PyRuntime.warmUp 会永远挂起）
         if (!isMainProcess()) return
         ContextProvider.provide(applicationContext)
         XRepo.init(this.applicationContext)
         ConversationRepo.init(this.applicationContext)
-        // T3：消息级增量持久化器（观察 LLMController 当前会话快照流，
-        // 独立于 UI 生命周期——回合可能在宿主后台跑，ViewModel 已销毁时仍落盘）
-        ConversationPersister.start(applicationScope)
         RuntimeEnvironment.install(createAppRuntimeBridge())
         // 依赖装配只发生在 AppServices（主进程组合根）
         AppServices.install(this)
@@ -54,6 +62,10 @@ class App : Application() {
         }
         applicationScope.launch {
             XRepo.tryPutDefaultSettings()
+        }
+        // OpenRouter 公共目录预热：免鉴权后台抓，30 分钟内不重拉；失败保留旧缓存
+        applicationScope.launch {
+            XRepo.cloudFacts.refreshOpenRouterIfStale()
         }
         applicationScope.launch {
             XRepo.skills.seedDefaults()
@@ -67,14 +79,51 @@ class App : Application() {
 
         observeFloatingBall()
         observeResidentNotification()
+        observeMcpService()
+        observeAgentWakeLock()
+        TurnNotificationManager.init(this)
     }
 
-    private fun observeResidentNotification() = launchFeatureFlagObserver(
-        enabledFlow = XRepo.residentNotificationEnabledSetting,
-        permission = Permission.NOTIFICATION,
-        onPermissionMissing = { XRepo.setResidentNotificationEnabled(false) },
-    ) { enabled ->
-        if (enabled) ResidentNotificationManager.start(this) else ResidentNotificationManager.stop(this)
+    private fun observeAgentWakeLock() {
+        AgentWakeLockController.start(this, applicationScope)
+    }
+
+    private fun observeMcpService() {
+        applicationScope.launch {
+            val service = requireService<McpService>()
+            val initialConfig = XRepo.mcpService.get()
+            if (initialConfig.enabled) {
+                service.start()
+            }
+            var lastConfig = initialConfig
+            XRepo.mcpService.configFlow.collect { config ->
+                if (config != lastConfig) {
+                    lastConfig = config
+                    if (config.enabled) {
+                        service.restart()
+                    } else {
+                        service.stop()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun observeResidentNotification() {
+        applicationScope.launch {
+            val control = requireService<AgentControl>()
+            val manager = requireService<AgentManager>()
+            combine(
+                XRepo.residentNotificationEnabledSetting,
+                control.status,
+                manager.activeStates,
+            ) { resident, main, others ->
+                resident || main.isRunning || others.values.any { it.isRunning }
+            }.distinctUntilChanged().collect { needed ->
+                if (needed) ResidentNotificationManager.start(this@App)
+                else ResidentNotificationManager.stop(this@App)
+            }
+        }
     }
 
     private fun observeFloatingBall() = launchFeatureFlagObserver(

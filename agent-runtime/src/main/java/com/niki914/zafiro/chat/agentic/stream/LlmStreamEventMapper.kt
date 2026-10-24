@@ -6,9 +6,9 @@ import com.niki914.okia.message.AssistantMessage
 import com.niki914.okia.message.ContentBlock
 import com.niki914.okia.message.StopReason
 import com.niki914.okia.message.ToolCallOutcome
-import com.niki914.zafiro.chat.RetryableErrorClassifier
 import com.niki914.zafiro.chat.LlmErrorCode
 import com.niki914.zafiro.chat.LlmStreamEvent
+import com.niki914.zafiro.chat.RetryableErrorClassifier
 import com.niki914.zafiro.chat.ToolCallKind
 import com.niki914.zafiro.chat.ToolCallStatus
 
@@ -109,8 +109,10 @@ object LlmStreamEventMapper {
                 accumulatedText = ""
                 resetThinkingState()
                 val classified = RetryableErrorClassifier.classify(event.error)
+                val rawMessage = event.error.message.trim().ifEmpty { null }
+                    ?: event.error.statusCode?.let { "HTTP $it" }
                 LlmStreamEvent.Error(
-                    message = event.error.message.trim().ifEmpty { null },
+                    message = rawMessage,
                     throwable = event.error.cause,
                     code = classified,
                     attempts = if (classified == LlmErrorCode.RetryExhausted) {
@@ -250,7 +252,12 @@ object LlmStreamEventMapper {
         val call = toolCall.toStatus()
         val outcome = this.outcome
         return when (outcome) {
-            is ToolCallOutcome.Success -> LlmStreamEvent.ToolSucceeded(call, outcome.content, outcome.images)
+            is ToolCallOutcome.Success -> LlmStreamEvent.ToolSucceeded(
+                call,
+                outcome.content,
+                outcome.images
+            )
+
             is ToolCallOutcome.Intercepted ->
                 if (outcome.isError) LlmStreamEvent.ToolFailed(
                     call,

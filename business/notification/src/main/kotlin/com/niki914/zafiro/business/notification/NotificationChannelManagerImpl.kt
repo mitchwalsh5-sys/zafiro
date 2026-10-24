@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.RingtoneManager
-import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.niki914.logging.Logger
@@ -22,6 +21,7 @@ class NotificationChannelManagerImpl(
     companion object {
         private const val TAG = "niki914_zafiro_NotificationChannelManager"
         private val OBSOLETE_CHANNELS = listOf(
+            "zafiro_resident",
             "zafiro_alerts_v1",
             "zafiro_alerts_v2",
             "zafiro_alerts_v3",
@@ -33,13 +33,17 @@ class NotificationChannelManagerImpl(
         context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
     }
 
+    @Volatile
+    private var channelsEnsured = false
+
     init {
         ensureChannels()
     }
 
     private fun ensureChannels() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (channelsEnsured) return
         val manager = notificationManager ?: return
+        channelsEnsured = true
 
         for (oldChannelId in OBSOLETE_CHANNELS) {
             try {
@@ -89,8 +93,6 @@ class NotificationChannelManagerImpl(
             }
         }
 
-        ensureChannels()
-
         val builder = NotificationCompat.Builder(context, channel.id)
         // 针对高优先级通知预设 IM 级别的提示音、震动与横幅优先级。
         // 注意：部分厂商系统（如 ColorOS/Oppo 等）有额外的应用级策略，默认可能压制横幅显示或静音。
@@ -111,7 +113,6 @@ class NotificationChannelManagerImpl(
         channel: AppNotificationChannel,
         block: NotificationCompat.Builder.() -> Unit,
     ): Notification {
-        ensureChannels()
         val builder = NotificationCompat.Builder(context, channel.id)
         builder.block()
         return builder.build()

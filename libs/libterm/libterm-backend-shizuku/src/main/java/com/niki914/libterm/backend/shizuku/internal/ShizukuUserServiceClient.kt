@@ -40,7 +40,7 @@ internal class ShizukuUserServiceClient(
     private val closed = AtomicBoolean(false)
     private val connectActive = AtomicBoolean(false)
     private val stateLock = Any()
-    private val userServiceTag = "$USER_SERVICE_TAG_PREFIX-${nextServiceId.incrementAndGet()}"
+    private val userServiceTag = "$USER_SERVICE_TAG_PREFIX-${android.os.Process.myPid()}-${nextServiceId.incrementAndGet()}"
     private val userServiceArgs = Shizuku.UserServiceArgs(
         ComponentName(
             context.packageName,

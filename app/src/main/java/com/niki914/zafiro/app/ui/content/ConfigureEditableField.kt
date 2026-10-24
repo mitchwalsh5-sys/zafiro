@@ -7,4 +7,6 @@ enum class ConfigureEditableField {
     ApiKey,
     Proxy,
     MaxTokens,
+    ContextWindow,
+    Thinking,
 }

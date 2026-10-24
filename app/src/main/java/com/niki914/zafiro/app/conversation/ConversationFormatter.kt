@@ -8,6 +8,7 @@ import com.niki914.okia.message.AssistantMessage
 import com.niki914.okia.message.ContentBlock
 import com.niki914.okia.message.Message
 import com.niki914.okia.message.ToolCallOutcome
+import com.niki914.okia.message.contextTokens
 import com.niki914.zafiro.api.model.Attachment
 import com.niki914.zafiro.api.model.Conversation
 import com.niki914.zafiro.api.model.ConversationId
@@ -16,8 +17,20 @@ import com.niki914.zafiro.api.model.ToolInvocation
 import com.niki914.zafiro.api.model.ToolOutcome
 import com.niki914.zafiro.api.model.TurnBlock
 import com.niki914.zafiro.api.text.FilesBlock
+import com.niki914.zafiro.api.text.SummaryBlock
 import com.niki914.zafiro.business.agent.blockIdAt
 import com.niki914.zafiro.business.agent.turnIdAt
+
+enum class ConversationOriginKind {
+    Regenerate,
+    Fork,
+    Rewind,
+}
+
+data class ParsedConversationTitle(
+    val cleanTitle: String,
+    val originKind: ConversationOriginKind?,
+)
 
 /**
  * T3 重写：消费 OKIA 会话树快照（SessionSnapshot）而非 Kai 时代 ChatTurn。
@@ -27,8 +40,45 @@ import com.niki914.zafiro.business.agent.turnIdAt
 object ConversationFormatter {
     private const val LOG_TAG = "niki914_zafiro_ConversationFormatter"
     private const val MAX_TITLE_LENGTH = 40
-    private const val MAX_PREVIEW_LENGTH = 20
+    private const val MAX_PREVIEW_LENGTH = 120
     private const val ELLIPSIS = "..."
+    const val COMPACTED_PREVIEW_TEXT = "Conversation compacted"
+
+    private val REGENERATE_KEYWORDS = setOf(
+        "Regenerate",
+        "Regenerated",
+        "Regenerar",
+        "Regenerado",
+        "重新生成",
+        "重新產生",
+        "再生成",
+    )
+
+    private val FORK_KEYWORDS = setOf(
+        "Fork",
+        "Forked",
+        "派生",
+        "分支",
+    )
+
+    private val REWIND_KEYWORDS = setOf(
+        "Rewind",
+        "倒回",
+        "回退",
+    )
+
+    private val ALL_PREFIX_KEYWORDS = (REGENERATE_KEYWORDS + FORK_KEYWORDS + REWIND_KEYWORDS)
+        .sortedByDescending { it.length }
+        .joinToString("|") { Regex.escape(it) }
+
+    /**
+     * 匹配形如 "Regenerate · ", "Fork • ", "Rewind: ", "重新生成 · " 等派生前缀。
+     * 分隔符匹配中点 (·, •) 或冒号 (: , ：)，不包含普通句点以防止误伤文件名。
+     */
+    private val PREFIX_REGEX = Regex(
+        """^\s*($ALL_PREFIX_KEYWORDS)\s*[·•:：]\s*""",
+        RegexOption.IGNORE_CASE,
+    )
 
     /** 没有配对 `ToolResult` 的工具调用：恢复后记为失败，且无失败原因。 */
     private const val UNPAIRED_TOOL_REASON = ""
@@ -37,10 +87,67 @@ object ConversationFormatter {
         return firstUserInput.trim().take(MAX_TITLE_LENGTH)
     }
 
+    /**
+     * 解析标题中的派生前缀并剥除所有嵌套前缀。
+     * 最外层（第一个匹配到）的前缀决定 [ParsedConversationTitle.originKind]。
+     * 若剥除后为空，[ParsedConversationTitle.cleanTitle] 返回空字符串，交由 UI 兜底未命名占位。
+     */
+    fun parseDisplayTitle(rawTitle: String): ParsedConversationTitle {
+        var remainder = rawTitle.trim()
+        var firstKind: ConversationOriginKind? = null
+
+        while (true) {
+            val match = PREFIX_REGEX.find(remainder) ?: break
+            if (match.range.first != 0) break
+
+            val keyword = match.groupValues[1]
+            if (firstKind == null) {
+                firstKind = when {
+                    REGENERATE_KEYWORDS.any {
+                        keyword.equals(
+                            it,
+                            ignoreCase = true
+                        )
+                    } -> ConversationOriginKind.Regenerate
+
+                    FORK_KEYWORDS.any {
+                        keyword.equals(
+                            it,
+                            ignoreCase = true
+                        )
+                    } -> ConversationOriginKind.Fork
+
+                    REWIND_KEYWORDS.any {
+                        keyword.equals(
+                            it,
+                            ignoreCase = true
+                        )
+                    } -> ConversationOriginKind.Rewind
+
+                    else -> null
+                }
+            }
+            remainder = remainder.substring(match.range.last + 1).trimStart()
+        }
+
+        return ParsedConversationTitle(
+            cleanTitle = remainder.trim(),
+            originKind = firstKind,
+        )
+    }
+
+    /**
+     * 过滤标题用于 UI 展示：剥除一层或多层派生前缀（如若干个 "Regenerate ·"）。
+     * 若剥除后为空，返回空字符串交由 UI 兜底未命名占位。
+     */
+    fun sanitizeDisplayTitle(rawTitle: String): String {
+        return parseDisplayTitle(rawTitle).cleanTitle
+    }
+
     fun previewFromText(text: String): String {
-        val trimmed = text.trim()
-        if (trimmed.length <= MAX_PREVIEW_LENGTH) return trimmed
-        return trimmed.take(MAX_PREVIEW_LENGTH) + ELLIPSIS
+        val flattened = text.replace(Regex("""\s+"""), " ").trim()
+        if (flattened.length <= MAX_PREVIEW_LENGTH) return flattened
+        return flattened.take(MAX_PREVIEW_LENGTH) + ELLIPSIS
     }
 
     fun previewFromEntries(entries: List<ConversationEntry>): String {
@@ -61,8 +168,17 @@ object ConversationFormatter {
     private fun previewTextOf(message: Message?): String {
         val text = when (message) {
             // 用户文本先在头部切掉注入块：切出来的那段是给 agent 看的机器文本，
-            // 拿它当预览会把 <zfr-files> 摆到对话列表里
-            is Message.User -> FilesBlock.strip(message.textBlocks().joinToString("\n")).text
+            // 拿它当预览会把 <zfr-files> 或 <zfr-summary> 摆到对话列表里
+            is Message.User -> {
+                val raw = message.textBlocks().joinToString("\n")
+                val summaryStripped = SummaryBlock.strip(raw)
+                if (summaryStripped.payload != null) {
+                    val remainingText = FilesBlock.strip(summaryStripped.text).text.trim()
+                    if (remainingText.isEmpty()) COMPACTED_PREVIEW_TEXT else remainingText
+                } else {
+                    FilesBlock.strip(raw).text
+                }
+            }
             is Message.Assistant -> message.message.textBlocks().joinToString("\n")
             else -> ""
         }
@@ -77,9 +193,14 @@ object ConversationFormatter {
         if (entries.isEmpty()) return emptyList()
         val byId = entries.associateBy { it.id }
         val target = leafId ?: entries.lastOrNull()?.id
+        val visited = HashSet<String>()
         val chain = buildList {
             var cursor = byId[target]
             while (cursor != null) {
+                if (!visited.add(cursor.id)) {
+                    Logger.w(LOG_TAG, "cycle detected in projectLeaf at entryId=${cursor.id}")
+                    break
+                }
                 add(cursor)
                 cursor = cursor.parentId?.let(byId::get)
             }
@@ -92,23 +213,38 @@ object ConversationFormatter {
         val startedAtMs = System.currentTimeMillis()
         val history = projectLeaf(snapshot.entries, snapshot.leafId)
         val turns = mutableListOf<ConversationTurn>()
+        // 历史里的 token 记账（与流式路径同源）：取最后一条带记账的助手响应
+        var contextTokens: Long? = null
 
         history.forEach { entry ->
             when (val message = entry.message) {
                 is Message.User -> {
                     // 展示路径上的切头：落盘的这条消息带着注入块，
-                    // 切掉后才是用户当时真正打的话
-                    val stripped = FilesBlock.strip(message.textBlocks().joinToString("\n"))
-                    turns += ConversationTurn(
-                        id = turnIdAt(turns.size),
-                        userText = stripped.text,
-                        images = message.content.filterIsInstance<ContentBlock.Image>()
-                            .map { Attachment(path = it.path, mimeType = it.mimeType) },
-                        files = stripped.files,
-                    )
+                    // 切掉后才是用户当时真正打的话；
+                    // 压缩检查点生成特化分割线回合，摘要正文对用户完全隐形
+                    val rawText = message.textBlocks().joinToString("\n")
+                    val summaryStripped = SummaryBlock.strip(rawText)
+                    if (summaryStripped.payload != null) {
+                        turns += ConversationTurn(
+                            id = turnIdAt(turns.size),
+                            userText = "",
+                            isCompactedDivider = true,
+                        )
+                    } else {
+                        val stripped = FilesBlock.strip(rawText)
+                        turns += ConversationTurn(
+                            id = turnIdAt(turns.size),
+                            userText = stripped.text,
+                            images = message.content.filterIsInstance<ContentBlock.Image>()
+                                .map { Attachment(path = it.path, mimeType = it.mimeType) },
+                            files = stripped.files,
+                            isCompactedDivider = false,
+                        )
+                    }
                 }
 
                 is Message.Assistant -> {
+                    message.message.usage?.contextTokens?.let { contextTokens = it }
                     val target = turns.lastOrNull()
                     if (target == null) {
                         // 没有前置用户消息的助手条目（异常快照）：丢弃，不造空回合
@@ -129,7 +265,11 @@ object ConversationFormatter {
             }
         }
 
-        return Conversation(id = ConversationId(snapshot.id), turns = turns).also { assembled ->
+        return Conversation(
+            id = ConversationId(snapshot.id),
+            turns = turns,
+            contextTokens = contextTokens,
+        ).also { assembled ->
             Logger.i(
                 LOG_TAG,
                 "assemble conversation entries=${history.size} turns=${assembled.turns.size} " +
@@ -240,7 +380,11 @@ object ConversationFormatter {
             ToolOutcome.Succeeded(resultText = content)
         }
 
-        is ToolCallOutcome.Interrupted -> ToolOutcome.Failed(message = "Interrupted", resultText = content)
+        is ToolCallOutcome.Interrupted -> ToolOutcome.Failed(
+            message = "Interrupted",
+            resultText = content
+        )
+
         is ToolCallOutcome.Unknown -> ToolOutcome.Failed(message = message, resultText = content)
     }
 

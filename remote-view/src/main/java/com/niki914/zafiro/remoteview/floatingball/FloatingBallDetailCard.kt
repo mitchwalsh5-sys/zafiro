@@ -25,7 +25,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,7 +35,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
-import kotlinx.coroutines.launch
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
@@ -61,6 +59,7 @@ import com.niki914.uikit.base.BaseTheme
 import com.niki914.uikit.infra.shape.G2CardShape
 import com.niki914.zafiro.api.model.ApprovalRequest
 import com.niki914.zafiro.remoteview.R
+import kotlinx.coroutines.launch
 
 /**
  * 授权确认卡片（第 3 个 Window 的核心视图）。
@@ -178,7 +177,10 @@ fun FloatingBallDetailMorphCard(
                         coroutineScope.launch {
                             animProgress.animateTo(
                                 targetValue = 1f,
-                                animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+                                animationSpec = tween(
+                                    durationMillis = 300,
+                                    easing = FastOutSlowInEasing
+                                ),
                             )
                         }
                     }
@@ -306,7 +308,11 @@ fun FloatingBallDetailCardContent(
 
                 // 命中规则
                 Text(
-                    text = stringResource(R.string.tool_permission_matched_rule, request.ruleName),
+                    text = stringResource(
+                        R.string.tool_permission_matched_rule,
+                        request.ruleName,
+                        request.matchedPattern,
+                    ),
                     color = colors.error,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
@@ -477,9 +483,10 @@ private fun PreviewDetailCard() {
             Box(modifier = Modifier.padding(16.dp)) {
                 FloatingBallDetailCard(
                     request = ApprovalRequest.ToolExecution(
-                        toolName = "terminal",
+                        toolName = "shell",
                         command = "rm -rf /data/local/tmp/cache_logs_001.log",
                         ruleName = "危险删除命令",
+                        matchedPattern = "rm -rf",
                     ),
                     onAllow = {},
                     onDeny = {},

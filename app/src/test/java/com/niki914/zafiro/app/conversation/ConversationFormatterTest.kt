@@ -1,6 +1,8 @@
+// 保护：会话历史投影为 UI 契约对象及列表预览生成的正确性（含标题清洗、多语言前缀、注入块剥离、压缩分割条与防 XML 泄露）。
 package com.niki914.zafiro.app.conversation
 
 import com.niki914.okia.conversation.ConversationEntry
+import com.niki914.okia.conversation.MessageEntry
 import com.niki914.okia.conversation.SessionSnapshot
 import com.niki914.okia.message.AssistantMessage
 import com.niki914.okia.message.ContentBlock
@@ -10,8 +12,13 @@ import com.niki914.zafiro.api.model.Attachment
 import com.niki914.zafiro.api.model.ConversationId
 import com.niki914.zafiro.api.model.ToolOutcome
 import com.niki914.zafiro.api.model.TurnBlock
+import com.niki914.zafiro.api.text.SummaryBlock
 import com.niki914.zafiro.app.util.SilentLoggerRule
+import com.niki914.zafiro.business.agent.turnIdAt
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -19,6 +26,104 @@ class ConversationFormatterTest {
 
     @get:Rule
     val silentLogger = SilentLoggerRule()
+
+    @Test
+    fun sanitizeDisplayTitle_stripsSingleAndRepeatedRegeneratePrefixes() {
+        assertEquals("原标题", ConversationFormatter.sanitizeDisplayTitle("Regenerate · 原标题"))
+        assertEquals(
+            "原标题",
+            ConversationFormatter.sanitizeDisplayTitle("Regenerate · Regenerate · 原标题")
+        )
+        assertEquals(
+            "原标题",
+            ConversationFormatter.sanitizeDisplayTitle("Regenerate · Regenerate · Regenerate · 原标题")
+        )
+        assertEquals(
+            "原标题",
+            ConversationFormatter.sanitizeDisplayTitle("  Regenerate ·   Regenerate · 原标题  ")
+        )
+        assertEquals("", ConversationFormatter.sanitizeDisplayTitle("Regenerate · "))
+        assertEquals("", ConversationFormatter.sanitizeDisplayTitle("Regenerate ·"))
+        assertEquals("普通标题", ConversationFormatter.sanitizeDisplayTitle("普通标题"))
+    }
+
+    @Test
+    fun parseDisplayTitle_detectsKindAndStripsNestedMultiLocalePrefixes() {
+        // 单层前缀
+        val regen = ConversationFormatter.parseDisplayTitle("Regenerate · 测试会话")
+        assertEquals("测试会话", regen.cleanTitle)
+        assertEquals(ConversationOriginKind.Regenerate, regen.originKind)
+
+        // 嵌套多层相同前缀
+        val nestedRegen =
+            ConversationFormatter.parseDisplayTitle("Regenerate · Regenerate · 深度测试")
+        assertEquals("深度测试", nestedRegen.cleanTitle)
+        assertEquals(ConversationOriginKind.Regenerate, nestedRegen.originKind)
+
+        // 嵌套不同前缀：以最外层（第一个）为准
+        val forkThenRegen =
+            ConversationFormatter.parseDisplayTitle("Fork · Regenerate · 派生后重新生成")
+        assertEquals("派生后重新生成", forkThenRegen.cleanTitle)
+        assertEquals(ConversationOriginKind.Fork, forkThenRegen.originKind)
+
+        val rewindThenFork = ConversationFormatter.parseDisplayTitle("Rewind · Fork · 回退后分支")
+        assertEquals("回退后分支", rewindThenFork.cleanTitle)
+        assertEquals(ConversationOriginKind.Rewind, rewindThenFork.originKind)
+
+        // 多语言前缀：西班牙语、中文、日文
+        val spanish = ConversationFormatter.parseDisplayTitle("Regenerar · Mi charla")
+        assertEquals("Mi charla", spanish.cleanTitle)
+        assertEquals(ConversationOriginKind.Regenerate, spanish.originKind)
+
+        val chinese = ConversationFormatter.parseDisplayTitle("重新生成 · 中文会话")
+        assertEquals("中文会话", chinese.cleanTitle)
+        assertEquals(ConversationOriginKind.Regenerate, chinese.originKind)
+
+        val japanese = ConversationFormatter.parseDisplayTitle("再生成 · 日本語の会話")
+        assertEquals("日本語の会話", japanese.cleanTitle)
+        assertEquals(ConversationOriginKind.Regenerate, japanese.originKind)
+
+        // 不同分隔符 (·, •, :, ：)
+        val bullet = ConversationFormatter.parseDisplayTitle("Regenerate • 圆点分隔")
+        assertEquals("圆点分隔", bullet.cleanTitle)
+        assertEquals(ConversationOriginKind.Regenerate, bullet.originKind)
+
+        val colon = ConversationFormatter.parseDisplayTitle("Fork: 英文冒号")
+        assertEquals("英文冒号", colon.cleanTitle)
+        assertEquals(ConversationOriginKind.Fork, colon.originKind)
+
+        val fullWidthColon = ConversationFormatter.parseDisplayTitle("Rewind：全角冒号")
+        assertEquals("全角冒号", fullWidthColon.cleanTitle)
+        assertEquals(ConversationOriginKind.Rewind, fullWidthColon.originKind)
+
+        // 包含前缀关键词但不是前缀（如文件名 Fork.kt）
+        val filename = ConversationFormatter.parseDisplayTitle("Fork.kt is a kotlin file")
+        assertEquals("Fork.kt is a kotlin file", filename.cleanTitle)
+        assertNull(filename.originKind)
+
+        // 无前缀普通标题
+        val normal = ConversationFormatter.parseDisplayTitle("今日工作小结")
+        assertEquals("今日工作小结", normal.cleanTitle)
+        assertNull(normal.originKind)
+
+        // 空标题与仅有前缀
+        val onlyPrefix = ConversationFormatter.parseDisplayTitle("Regenerate · ")
+        assertEquals("", onlyPrefix.cleanTitle)
+        assertEquals(ConversationOriginKind.Regenerate, onlyPrefix.originKind)
+    }
+
+    @Test
+    fun previewFromText_flattensWhitespaceAndAllowsLongerText() {
+        val multiline = "第一行内容\n\n第二行内容\t第三行"
+        assertEquals(
+            "第一行内容 第二行内容 第三行",
+            ConversationFormatter.previewFromText(multiline)
+        )
+
+        val longText = "a".repeat(150)
+        val preview = ConversationFormatter.previewFromText(longText)
+        assertEquals(120 + 3, preview.length) // 120 + "..."
+    }
 
     @Test
     fun projectLeaf_followsParentChainToRoot() {
@@ -213,6 +318,56 @@ class ConversationFormatterTest {
             .single() as TurnBlock.Tool
 
         assertEquals(ToolOutcome.Failed(message = ""), tool.outcome)
+    }
+
+    @Test
+    fun toConversation_mapsSummaryBlockToCompactedDividerTurn() {
+        val summaryText = SummaryBlock.block(
+            SummaryBlock.Payload(keepTurns = 2, summary = "## Goal\nSome summary")
+        )
+        val snapshot = snapshotOf(
+            Message.User(listOf(ContentBlock.Text("u1"))),
+            Message.Assistant(AssistantMessage(listOf(ContentBlock.Text("a1")))),
+            Message.User(listOf(ContentBlock.Text(summaryText))),
+            Message.User(listOf(ContentBlock.Text("u2"))),
+        )
+
+        val conversation = ConversationFormatter.toConversation(snapshot)
+
+        assertEquals(3, conversation.turns.size)
+        // Turn 0: normal turn
+        assertFalse(conversation.turns[0].isCompactedDivider)
+        assertEquals("u1", conversation.turns[0].userText)
+        assertEquals(turnIdAt(0), conversation.turns[0].id)
+
+        // Turn 1: compacted divider
+        assertTrue(conversation.turns[1].isCompactedDivider)
+        assertEquals("", conversation.turns[1].userText)
+        assertEquals(turnIdAt(1), conversation.turns[1].id)
+        assertTrue(conversation.turns[1].blocks.isEmpty())
+
+        // Turn 2: normal turn after compaction
+        assertFalse(conversation.turns[2].isCompactedDivider)
+        assertEquals("u2", conversation.turns[2].userText)
+        assertEquals(turnIdAt(2), conversation.turns[2].id)
+    }
+
+    @Test
+    fun previewFromMessages_returnsCompactedPreviewForSummaryMessage() {
+        val summaryText = SummaryBlock.block(
+            SummaryBlock.Payload(keepTurns = 2, summary = "## Goal\nSome summary")
+        )
+        val preview = ConversationFormatter.previewFromMessages(
+            listOf(
+                MessageEntry(
+                    id = "e1",
+                    timestamp = 1000L,
+                    message = Message.User(listOf(ContentBlock.Text(summaryText))),
+                )
+            )
+        )
+
+        assertEquals(ConversationFormatter.COMPACTED_PREVIEW_TEXT, preview)
     }
 
     private fun snapshotOf(vararg messages: Message): SessionSnapshot {

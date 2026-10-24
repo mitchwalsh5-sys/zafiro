@@ -1,6 +1,5 @@
 package com.niki914.okia.protocol
 
-import com.niki914.okia.ImageLoader
 import com.niki914.okia.message.AssistantMessage
 import com.niki914.okia.message.ContentBlock
 import com.niki914.okia.message.Message
@@ -9,11 +8,11 @@ import com.niki914.okia.message.ThinkingLevel
 import com.niki914.okia.message.ToolCallOutcome
 import com.niki914.okia.message.Usage
 import com.niki914.okia.tooling.ToolDescriptor
+import com.niki914.okia.tooling.ToolSchemaSanitizer
 import com.niki914.okia.transport.HttpRequest
 import com.niki914.okia.transport.SseEventParser
 import com.niki914.okia.transport.SseLine
 import kotlinx.coroutines.CancellationException
-import kotlin.io.encoding.Base64
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.SerializationException
@@ -25,6 +24,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import kotlin.io.encoding.Base64
 
 /**
  * Anthropic Messages API 协议。真实流格式经 DeepSeek /anthropic 网关实测
@@ -53,7 +53,10 @@ class AnthropicMessagesProtocol(
     override fun useApiKey(apiKey: String): Map<String, String> =
         if (apiKey.isEmpty()) emptyMap() else mapOf("x-api-key" to apiKey)
 
-    override suspend fun buildRequest(snapshot: RequestSnapshot, history: List<Message>): HttpRequest =
+    override suspend fun buildRequest(
+        snapshot: RequestSnapshot,
+        history: List<Message>
+    ): HttpRequest =
         HttpRequest(
             url = snapshot.endpoint,
             method = "POST",
@@ -115,7 +118,10 @@ class AnthropicMessagesProtocol(
     /** 每条真实消息：role + content 块数组（合并后的最终形态）。 */
     private class MergedMessage(val role: String, val blocks: MutableList<JsonObject>)
 
-    private suspend fun buildRequestBody(snapshot: RequestSnapshot, history: List<Message>): JsonObject =
+    private suspend fun buildRequestBody(
+        snapshot: RequestSnapshot,
+        history: List<Message>
+    ): JsonObject =
         buildJsonObject {
             put("model", snapshot.model)
             put("max_tokens", snapshot.maxTokens)  // Anthropic 必填
@@ -140,26 +146,65 @@ class AnthropicMessagesProtocol(
                     }
                 }
             }
-            snapshot.systemPrompt?.let { put("system", it) }
+            snapshot.systemPrompt?.let { prompt ->
+                // system 用块数组形态，唯一目的是挂 cache_control breakpoint
+                // （字符串形态无处可挂）。内容与字符串形态等价。
+                put("system", buildJsonArray {
+                    add(buildJsonObject {
+                        put("type", "text")
+                        put("text", prompt)
+                        put(CACHE_CONTROL, EPHEMERAL_CACHE)
+                    })
+                })
+            }
             if (snapshot.tools.isNotEmpty()) {
-                put("tools", buildJsonArray { snapshot.tools.forEach { add(convertTool(it)) } })
+                // 最后一个 tool 上挂 breakpoint：工具描述与后续会话消息分开缓存，
+                // 会话变长时工具段不必重算。
+                put("tools", buildJsonArray {
+                    snapshot.tools.forEachIndexed { index, tool ->
+                        val json = convertTool(tool)
+                        val marked = if (index == snapshot.tools.lastIndex) {
+                            withCacheControl(json)
+                        } else json
+                        add(marked)
+                    }
+                })
             }
             put("messages", buildJsonArray {
-                mergeMessages(snapshot, history).forEach { merged ->
+                val merged = mergeMessages(snapshot, history)
+                merged.forEachIndexed { index, message ->
+                    // 最后一条消息上挂 breakpoint：下一回合的前缀就是这次的全量
+                    // 输入，标记后本次写入的缓存可直接被 fork / regenerate 复用。
+                    val blocks = if (index == merged.lastIndex && message.blocks.isNotEmpty()) {
+                        val last = message.blocks.last()
+                        message.blocks.dropLast(1) + withCacheControl(last)
+                    } else message.blocks
                     add(buildJsonObject {
-                        put("role", merged.role)
-                        put("content", buildJsonArray { merged.blocks.forEach { add(it) } })
+                        put("role", message.role)
+                        put("content", buildJsonArray { blocks.forEach { add(it) } })
                     })
                 }
             })
         }
+
+    /** 若块类型可缓存（text / tool_result / image / tool 描述），追加 cache_control 标记返回新对象。 */
+    private fun withCacheControl(block: JsonObject): JsonObject {
+        val type = (block["type"] as? JsonPrimitive)?.contentOrNull
+        // tool 描述没有 type 字段；内容块有 type。两者都支持 cache_control
+        val cacheable = type == null || type == "text" || type == "tool_result" || type == "image"
+        if (!cacheable) return block
+        return JsonObject(block + (CACHE_CONTROL to EPHEMERAL_CACHE))
+    }
 
     /**
      * 历史 → Anthropic 消息序列：文本/思考/工具调用各自映射为 content 块；
      * 工具结果映射为 user 消息的 tool_result 块；连续同角色消息合并
      * （Anthropic 严格交替）。工具结果与后续用户输入合并进同一 user 消息。
      */
-    private suspend fun mergeMessages(snapshot: RequestSnapshot, history: List<Message>): List<MergedMessage> {
+    private suspend fun mergeMessages(
+        snapshot: RequestSnapshot,
+        history: List<Message>
+    ): List<MergedMessage> {
         val merged = mutableListOf<MergedMessage>()
         for (message in history) {
             val (role, blocks) = when (message) {
@@ -177,7 +222,10 @@ class AnthropicMessagesProtocol(
         return merged
     }
 
-    private suspend fun userBlocks(snapshot: RequestSnapshot, blocks: List<ContentBlock>): List<JsonObject> {
+    private suspend fun userBlocks(
+        snapshot: RequestSnapshot,
+        blocks: List<ContentBlock>
+    ): List<JsonObject> {
         val textBlocks = blocks.filterIsInstance<ContentBlock.Text>()
         val images = blocks.filterIsInstance<ContentBlock.Image>()
         // 无图：纯文本
@@ -199,7 +247,10 @@ class AnthropicMessagesProtocol(
             } + images.map { img ->
                 buildJsonObject {
                     put("type", "text")
-                    put("text", "[image omitted: ${if (snapshot.supportsImages) "file not found" else "model does not support images"}]")
+                    put(
+                        "text",
+                        "[image omitted: ${if (snapshot.supportsImages) "file not found" else "model does not support images"}]"
+                    )
                 }
             }
         }
@@ -264,7 +315,10 @@ class AnthropicMessagesProtocol(
             }
         }
 
-    private suspend fun toolResultBlock(snapshot: RequestSnapshot, result: Message.ToolResult): JsonObject {
+    private suspend fun toolResultBlock(
+        snapshot: RequestSnapshot,
+        result: Message.ToolResult
+    ): JsonObject {
         val images = (result.outcome as? ToolCallOutcome.Success)?.images.orEmpty()
         val (loaded, notes) = loadToolImages(snapshot, images)
         val text = buildString {
@@ -315,7 +369,9 @@ class AnthropicMessagesProtocol(
         buildJsonObject {
             put("name", tool.wireName)
             put("description", tool.description)
-            tool.inputSchemaJson?.let { put("input_schema", codec.parseToJsonElement(it)) }
+            tool.inputSchemaJson?.let {
+                put("input_schema", ToolSchemaSanitizer.sanitize(codec.parseToJsonElement(it)))
+            }
         }
 
     // ── 流解析 ─────────────────────────────────────────────────────────────
@@ -541,6 +597,11 @@ class AnthropicMessagesProtocol(
         // 官方临时错误类型（可重试）：overloaded 对应 529、rate_limit 对应 429；
         // 其余（invalid_request_error / authentication_error 等）不可重试
         val RETRYABLE_ERROR_TYPES = setOf("overloaded_error", "rate_limit_error")
+
+        // prompt caching（官方 GA）：缓存标记字段与默认 5 分钟 TTL 的 ephemeral 档。
+        // 单次请求最多 4 个 breakpoint，本类用 3 个（system / 最后一个 tool / 最后一条消息）。
+        const val CACHE_CONTROL = "cache_control"
+        val EPHEMERAL_CACHE = buildJsonObject { put("type", "ephemeral") }
     }
 }
 

@@ -1,7 +1,9 @@
+// githooks:ignore-file monitor-lock 终端进程句柄池采用细粒度监视器锁保障原子状态切换
 package com.niki914.zafiro.chat.agentic.shell
 
 import com.niki914.libterm.OpenResult
 import com.niki914.libterm.OutputStream
+import com.niki914.libterm.SessionState
 import com.niki914.libterm.SshAuth
 import com.niki914.libterm.SshOpenOptions
 import com.niki914.libterm.TerminalFailure
@@ -14,12 +16,13 @@ import com.niki914.libterm.runtime.TermResult
 import com.niki914.libterm.runtime.TerminalTextChunk
 import com.niki914.logging.Logger
 import com.niki914.xposed.api.util.ContextProvider
+import com.niki914.zafiro.chat.agentic.AgentTenantContext
 import com.niki914.zafiro.chat.agentic.shell.TerminalSessionPool.completeAsync
 import com.niki914.zafiro.chat.agentic.shell.TerminalSessionPool.readSession
 import com.niki914.zafiro.chat.agentic.shell.TerminalToolResponse.stderrText
 import com.niki914.zafiro.chat.agentic.shell.TerminalToolResponse.stdoutText
 import com.niki914.zafiro.util.ToolOutputTruncator
-import kotlinx.coroutines.CancellationException
+import com.niki914.zafiro.api.util.runCatchingCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +31,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import java.io.File
 import java.util.UUID
 import kotlin.random.Random
 
@@ -38,6 +42,7 @@ object TerminalSessionPool {
     private const val PUBLIC_HANDLE_LENGTH = 4
     private const val MAX_HANDLE_GENERATION_ATTEMPTS = 64
     private const val DEFAULT_INTERACTIVE_READ_MAX_BYTES = 8192
+
     // 与 ToolOutputTruncator.DEFAULT_MAX_BYTES 对齐；readSession 截断由统一入口处理并导出全量
     // FIXME(async-refactor): 异步轮询链路重构时一并收口 readSession 的上限与导出语义
     private const val DEFAULT_READ_MAX_BYTES = ToolOutputTruncator.DEFAULT_MAX_BYTES
@@ -54,7 +59,11 @@ object TerminalSessionPool {
     private var runtimePortFactory: suspend (CoroutineScope) -> TerminalRuntimePort =
         ::createLibTermRuntimePort
 
-    suspend fun open(identity: String, cwd: String? = null): TerminalOpenOutcome {
+    suspend fun open(
+        identity: String,
+        cwd: String? = null,
+        collectOutput: Boolean = false,
+    ): TerminalOpenOutcome {
         val mappedIdentity = try {
             mapIdentity(identity)
         } catch (error: IllegalArgumentException) {
@@ -65,7 +74,7 @@ object TerminalSessionPool {
             terminalIdentity = mappedIdentity,
             cwd = cwd,
             sshOptions = null,
-            collectOutput = false,
+            collectOutput = collectOutput,
         )
     }
 
@@ -236,12 +245,15 @@ object TerminalSessionPool {
             sshOptions = sshOptions,
         )) {
             is OpenResult.Success -> {
+                val callerTenantId =
+                    kotlin.coroutines.coroutineContext[AgentTenantContext]?.tenantId
                 val entry = TerminalSessionEntry(
                     handle = handle,
                     identity = publicIdentity,
                     session = result.value,
                     libTermSessionId = result.value.id,
                     cwd = cwd,
+                    tenantId = callerTenantId,
                 )
                 val existing = synchronized(lock) {
                     val current = sessions[handle]
@@ -294,19 +306,30 @@ object TerminalSessionPool {
         }
     }
 
+    private suspend fun getTenantSession(session: String): TerminalSessionEntry? {
+        val entry = synchronized(lock) { sessions[session] } ?: return null
+        val callerTenantId = kotlin.coroutines.coroutineContext[AgentTenantContext]?.tenantId
+        if (callerTenantId != null && callerTenantId != entry.tenantId) {
+            Logger.w(
+                LOG_TAG,
+                "access denied: session $session belongs to tenant=${entry.tenantId}, caller=$callerTenantId"
+            )
+            return null
+        }
+        return entry
+    }
+
     suspend fun writeInteractive(
         session: String,
         text: String,
         requestId: String? = null,
     ): TerminalInteractiveWriteOutcome {
-        val (entry, state) = synchronized(lock) {
-            val entry =
-                sessions[session] ?: return TerminalInteractiveWriteOutcome.SessionNotFound(session)
-            val state =
-                interactiveStates[session] ?: return TerminalInteractiveWriteOutcome.NotInteractive(
-                    session
-                )
-            entry to state
+        val entry = getTenantSession(session)
+            ?: return TerminalInteractiveWriteOutcome.SessionNotFound(session)
+        val state = synchronized(lock) {
+            interactiveStates[session] ?: return TerminalInteractiveWriteOutcome.NotInteractive(
+                session
+            )
         }
         val replay = requestId?.let { id ->
             synchronized(state.lock) {
@@ -321,10 +344,10 @@ object TerminalSessionPool {
             )
         }
 
-        return try {
-            if (!state.inputLock.tryLock()) {
-                return TerminalInteractiveWriteOutcome.Busy(session)
-            }
+        if (!state.inputLock.tryLock()) {
+            return TerminalInteractiveWriteOutcome.Busy(session)
+        }
+        return runCatchingCancellable {
             try {
                 entry.session.write(text)
                 val writeResult = synchronized(state.lock) {
@@ -346,50 +369,40 @@ object TerminalSessionPool {
             } finally {
                 state.inputLock.unlock()
             }
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
+        }.getOrElse { error ->
             TerminalInteractiveWriteOutcome.UnexpectedError(error)
         }
     }
 
-    fun readInteractive(
+    suspend fun readInteractive(
         session: String,
         mode: TerminalReadMode = TerminalReadMode.DELTA,
         maxBytes: Int = DEFAULT_INTERACTIVE_READ_MAX_BYTES,
     ): TerminalInteractiveReadOutcome {
+        val entry = getTenantSession(session)
+            ?: return TerminalInteractiveReadOutcome.SessionNotFound(session)
         val state = synchronized(lock) {
-            if (!sessions.containsKey(session)) {
-                return TerminalInteractiveReadOutcome.SessionNotFound(session)
-            }
             interactiveStates[session] ?: return TerminalInteractiveReadOutcome.NotInteractive(
                 session
             )
         }
         val maxChars = maxBytes.coerceAtLeast(1)
         val snapshot = synchronized(state.lock) {
-            val rawStdout = when (mode) {
-                TerminalReadMode.DELTA -> state.stdout.substring(state.stdoutDeltaOffset)
-                TerminalReadMode.SNAPSHOT -> state.stdout.toString()
-            }
-            val rawStderr = when (mode) {
-                TerminalReadMode.DELTA -> state.stderr.substring(state.stderrDeltaOffset)
-                TerminalReadMode.SNAPSHOT -> state.stderr.toString()
+            val raw = when (mode) {
+                TerminalReadMode.DELTA -> state.text.substring(state.deltaOffset)
+                TerminalReadMode.SNAPSHOT -> state.text.toString()
             }
             if (mode == TerminalReadMode.DELTA) {
-                state.stdoutDeltaOffset = state.stdout.length
-                state.stderrDeltaOffset = state.stderr.length
+                state.deltaOffset = state.text.length
             }
             InteractiveReadSnapshot(
-                stdout = rawStdout.takeLast(maxChars),
-                stderr = rawStderr.takeLast(maxChars),
+                text = raw.takeLast(maxChars),
                 sequence = state.outputSequence,
-                truncated = rawStdout.length > maxChars || rawStderr.length > maxChars,
+                truncated = raw.length > maxChars,
             )
         }
         return TerminalInteractiveReadOutcome.Success(
-            stdout = snapshot.stdout,
-            stderr = snapshot.stderr,
+            text = snapshot.text,
             mode = mode,
             sequence = snapshot.sequence,
             truncated = snapshot.truncated,
@@ -402,16 +415,31 @@ object TerminalSessionPool {
         }
     }
 
+    /**
+     * 会话生死：池里还在，且交互流没有终结，且底层会话未退出。
+     * SSH 远端掉线 / 本地 shell 退出时，仅靠池条目存在与否会把僵尸会话当成活的。
+     */
+    fun isSessionAlive(session: String): Boolean {
+        // githooks:ignore monitor-lock 与既有锁域同源：sessions / interactiveStates / ended 都由本对象锁保护
+        return synchronized(lock) {
+            val entry = sessions[session] ?: return@synchronized false
+            if (!entry.session.isAlive) return@synchronized false
+            val state = interactiveStates[session] ?: return@synchronized true
+            // githooks:ignore monitor-lock state.ended 由 interactiveState 自己的锁保护，与既有采集处一致
+            synchronized(state.lock) { !state.ended }
+        }
+    }
+
     suspend fun executeBlocking(
         session: String,
         command: String,
         timeoutMs: Long,
     ): TerminalCommandOutcome {
         val startTimeMs = System.currentTimeMillis()
-        val (entry, executeLock) = synchronized(lock) {
-            val entry = sessions[session] ?: return TerminalCommandOutcome.SessionNotFound(session)
-            val executeLock = executionLocks.getOrPut(session) { Mutex() }
-            entry to executeLock
+        val entry =
+            getTenantSession(session) ?: return TerminalCommandOutcome.SessionNotFound(session)
+        val executeLock = synchronized(lock) {
+            executionLocks.getOrPut(session) { Mutex() }
         }
         if (!executeLock.tryLock()) {
             Logger.d(LOG_TAG, "command busy session=$session")
@@ -426,63 +454,63 @@ object TerminalSessionPool {
             "command start session=$session commandLength=${command.length} timeoutMs=$timeoutMs"
         )
         return try {
-            when (val result = entry.session.exec(command = command, timeoutMillis = timeoutMs)) {
-                is TermResult.Success -> {
-                    if (result.value.timedOut) {
-                        Logger.i(
+            runCatchingCancellable {
+                when (val result = entry.session.exec(command = command, timeoutMillis = timeoutMs)) {
+                    is TermResult.Success -> {
+                        if (result.value.timedOut) {
+                            Logger.i(
+                                LOG_TAG,
+                                "command timed out session=$session " +
+                                        "elapsedMs=${System.currentTimeMillis() - startTimeMs}"
+                            )
+                            TerminalCommandOutcome.Timeout(
+                                session = entry.handle,
+                                identity = entry.identity,
+                                result = result.value,
+                                elapsedSeconds = elapsedSeconds(startTimeMs),
+                            )
+                        } else {
+                            Logger.i(
+                                LOG_TAG,
+                                "command done session=$session exitCode=${result.value.exitCode} " +
+                                        "elapsedMs=${System.currentTimeMillis() - startTimeMs}"
+                            )
+                            TerminalCommandOutcome.Success(
+                                session = entry.handle,
+                                identity = entry.identity,
+                                result = result.value,
+                                elapsedSeconds = elapsedSeconds(startTimeMs),
+                            )
+                        }
+                    }
+
+                    is TermResult.Failure -> {
+                        Logger.w(
                             LOG_TAG,
-                            "command timed out session=$session " +
+                            "command failed session=$session failure=${result.failure} " +
                                     "elapsedMs=${System.currentTimeMillis() - startTimeMs}"
                         )
-                        TerminalCommandOutcome.Timeout(
+                        TerminalCommandOutcome.Failure(
                             session = entry.handle,
                             identity = entry.identity,
-                            result = result.value,
-                            elapsedSeconds = elapsedSeconds(startTimeMs),
-                        )
-                    } else {
-                        Logger.i(
-                            LOG_TAG,
-                            "command done session=$session exitCode=${result.value.exitCode} " +
-                                    "elapsedMs=${System.currentTimeMillis() - startTimeMs}"
-                        )
-                        TerminalCommandOutcome.Success(
-                            session = entry.handle,
-                            identity = entry.identity,
-                            result = result.value,
+                            failure = result.failure,
                             elapsedSeconds = elapsedSeconds(startTimeMs),
                         )
                     }
                 }
-
-                is TermResult.Failure -> {
-                    Logger.w(
-                        LOG_TAG,
-                        "command failed session=$session failure=${result.failure} " +
-                                "elapsedMs=${System.currentTimeMillis() - startTimeMs}"
-                    )
-                    TerminalCommandOutcome.Failure(
-                        session = entry.handle,
-                        identity = entry.identity,
-                        failure = result.failure,
-                        elapsedSeconds = elapsedSeconds(startTimeMs),
-                    )
-                }
+            }.getOrElse { error ->
+                Logger.w(
+                    LOG_TAG,
+                    "command unexpected error session=$session " +
+                            "errorType=${error::class.simpleName} message=${error.message} " +
+                            "elapsedMs=${System.currentTimeMillis() - startTimeMs}"
+                )
+                TerminalCommandOutcome.UnexpectedError(
+                    session = entry.handle,
+                    throwable = error,
+                    elapsedSeconds = elapsedSeconds(startTimeMs),
+                )
             }
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            Logger.w(
-                LOG_TAG,
-                "command unexpected error session=$session " +
-                        "errorType=${error::class.simpleName} message=${error.message} " +
-                        "elapsedMs=${System.currentTimeMillis() - startTimeMs}"
-            )
-            TerminalCommandOutcome.UnexpectedError(
-                session = entry.handle,
-                throwable = error,
-                elapsedSeconds = elapsedSeconds(startTimeMs),
-            )
         } finally {
             executeLock.unlock()
         }
@@ -495,14 +523,14 @@ object TerminalSessionPool {
         notifyOnComplete: Boolean = false,
     ): TerminalAsyncStartOutcome {
         val startTimeMs = System.currentTimeMillis()
-        val (entry, executeLock, holder) = synchronized(lock) {
-            val entry =
-                sessions[session] ?: return TerminalAsyncStartOutcome.SessionNotFound(session)
+        val entry = getTenantSession(session)
+            ?: return TerminalAsyncStartOutcome.SessionNotFound(session)
+        val (executeLock, holder) = synchronized(lock) {
             val executeLock = executionLocks.getOrPut(session) { Mutex() }
             val holder = runtimeHolder ?: return TerminalAsyncStartOutcome.InvalidRequest(
                 "Terminal runtime is not initialized. Use open or open_and_exec first.",
             )
-            Triple(entry, executeLock, holder)
+            executeLock to holder
         }
         if (!executeLock.tryLock()) {
             Logger.d(LOG_TAG, "async busy session=$session")
@@ -533,7 +561,7 @@ object TerminalSessionPool {
             }
         }
         val execJob = holder.scope.launch(start = CoroutineStart.LAZY) {
-            try {
+            runCatchingCancellable {
                 when (val result =
                     entry.session.exec(command = command, timeoutMillis = timeoutMs)) {
                     is TermResult.Success -> synchronized(state.lock) {
@@ -544,9 +572,7 @@ object TerminalSessionPool {
                         state.failure = result.failure
                     }
                 }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
+            }.onFailure { error ->
                 synchronized(state.lock) {
                     state.unexpectedError = error
                 }
@@ -590,10 +616,8 @@ object TerminalSessionPool {
         mode: TerminalReadMode = TerminalReadMode.DELTA,
         maxBytes: Int = DEFAULT_READ_MAX_BYTES,
     ): TerminalReadOutcome {
-        // 1. Check the session exists.
-        val entry = synchronized(lock) {
-            sessions[session]
-        } ?: return TerminalReadOutcome.SessionNotFound(session)
+        // 1. Check the session exists and belongs to this tenant.
+        val entry = getTenantSession(session) ?: return TerminalReadOutcome.SessionNotFound(session)
         // 完成字段、异常结果与 asyncStates 必须在同一个监视器临界区里取快照：
         // onAsyncCompleted 是“先在 state.lock 下写完成字段、再单独进 lock 从 asyncStates 移除”
         // 两段临界区，分开读会落在两者之间，把刚跑完的任务误判成 NotBackground。
@@ -687,6 +711,7 @@ object TerminalSessionPool {
     }
 
     suspend fun close(session: String): TerminalCloseOutcome {
+        val target = getTenantSession(session) ?: return TerminalCloseOutcome.Closed
         val removed = synchronized(lock) {
             RemovedSession(
                 entry = sessions.remove(session),
@@ -702,13 +727,11 @@ object TerminalSessionPool {
         }
         removed.interactiveState?.collectorJob?.cancel()
         val entry = removed.entry ?: return TerminalCloseOutcome.Closed
-        return try {
+        return runCatchingCancellable {
             entry.session.close()
             Logger.d(LOG_TAG, "session closed handle=$session")
             TerminalCloseOutcome.Closed
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
+        }.getOrElse { error ->
             Logger.w(
                 LOG_TAG,
                 "session close failed handle=$session errorType=${error::class.simpleName} " +
@@ -757,6 +780,22 @@ object TerminalSessionPool {
         )
         return outcome
     }
+
+    /** 释放指定租户/会话内部打开的所有终端会话（不波及其他并发 Agent）。 */
+    suspend fun closeTenantSessions(tenantId: String): Int =
+        kotlinx.coroutines.withContext(AgentTenantContext(tenantId)) {
+            val targetSessions = synchronized(lock) {
+                sessions.values.filter { it.tenantId == tenantId }.map { it.handle }
+            }
+            var count = 0
+            for (handle in targetSessions) {
+                if (close(handle) is TerminalCloseOutcome.Closed) {
+                    count++
+                }
+            }
+            Logger.d(LOG_TAG, "closeTenantSessions tenantId=$tenantId closedCount=$count")
+            count
+        }
 
     internal fun installHandleGeneratorForTest(generator: () -> String): AutoCloseable {
         val previous = synchronized(lock) {
@@ -865,14 +904,22 @@ object TerminalSessionPool {
             interactiveStates[entry.handle] = state
         }
         val collectorJob = holder.scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            entry.session.stream.collect { chunk ->
-                synchronized(state.lock) {
-                    when (chunk.stream) {
-                        OutputStream.STDOUT -> state.stdout.append(chunk.text)
-                        OutputStream.STDERR -> state.stderr.append(chunk.text)
+            runCatchingCancellable {
+                entry.session.stream.collect { chunk ->
+                    // githooks:ignore monitor-lock 采集缓冲由 interactiveState 自己的锁保护，与读取侧同源
+                    synchronized(state.lock) {
+                        // stdout/stderr 按到达顺序写进同一条流：读取与偏移都只建立在这一条流上。
+                        // 分两个缓冲再由上层拼接时，两侧各自增长会让绝对偏移互相平移，哨兵窗口错位。
+                        state.text.append(chunk.text)
+                        state.outputSequence += 1L
                     }
-                    state.outputSequence += 1L
                 }
+                // githooks:ignore monitor-lock 同上
+                synchronized(state.lock) { state.ended = true }
+            }.onFailure {
+                // 流异常结束同样视为会话终结（SSH 断连等）
+                // githooks:ignore monitor-lock 同上
+                synchronized(state.lock) { state.ended = true }
             }
         }
         synchronized(state.lock) {
@@ -947,14 +994,14 @@ object TerminalSessionPool {
      * 后台轮询输出统一过滤：截断 + 全量导出（FIXME(async-refactor): 异步
      * 轮询重构时收口此处；DELTA 模式增量导出语义待重新设计）。
      */
-    private fun truncateOutput(text: String, maxBytes: Int, exportDir: java.io.File?): String {
+    private fun truncateOutput(text: String, maxBytes: Int, exportDir: File?): String {
         return ToolOutputTruncator.filterForAgent(fullContent = text, exportDir = exportDir)
     }
 
     /** 截断导出目录（filesDir/tool_output）；无 Context（单测）时返回 null（不导出）。 */
-    internal var exportDirOverride: java.io.File? = null
+    internal var exportDirOverride: File? = null
 
-    private fun exportDir(): java.io.File? =
+    private fun exportDir(): File? =
         exportDirOverride ?: ToolOutputTruncator.defaultExportDir()
 
     private fun mergedOutput(result: CommandResult): String {
@@ -1011,6 +1058,7 @@ internal data class TerminalSessionEntry(
     var completedFailure: TerminalFailure? = null,
     var completedUnexpectedError: Throwable? = null,
     var completedElapsedSeconds: Long = 0,
+    val tenantId: String? = null,
 )
 
 internal interface TerminalRuntimePort {
@@ -1027,6 +1075,10 @@ internal interface TerminalRuntimePort {
 internal interface TerminalSessionPort {
     val id: String
     val stream: Flow<TerminalTextChunk>
+
+    /** 会话是否仍活着（shell 退出 / SSH 断连后为 false）。默认 true，兼容不感知状态的实现。 */
+    val isAlive: Boolean get() = true
+
     suspend fun exec(command: String, timeoutMillis: Long): TermResult<CommandResult>
     suspend fun write(text: String)
     suspend fun close()
@@ -1080,6 +1132,9 @@ private class LibTermTerminalSessionPort(
     override val id: String
         get() = delegate.id
 
+    override val isAlive: Boolean
+        get() = delegate.state.value is SessionState.Running || delegate.state.value is SessionState.Starting
+
     override val stream: Flow<TerminalTextChunk>
         get() = delegate.stream
 
@@ -1115,12 +1170,13 @@ private data class AsyncState(
 private data class InteractiveState(
     val inputLock: Mutex,
     val lock: Any,
-    val stdout: StringBuilder = StringBuilder(),
-    val stderr: StringBuilder = StringBuilder(),
+    /** 到达序合并输出流。 */
+    val text: StringBuilder = StringBuilder(),
     val writeResults: MutableMap<String, InteractiveWriteResult> = linkedMapOf(),
     var collectorJob: Job? = null,
-    var stdoutDeltaOffset: Int = 0,
-    var stderrDeltaOffset: Int = 0,
+    /** 输出流已完结（会话退出/断连）。 */
+    var ended: Boolean = false,
+    var deltaOffset: Int = 0,
     var inputSequence: Long = 0L,
     var outputSequence: Long = 0L,
 )
@@ -1131,8 +1187,7 @@ private data class InteractiveWriteResult(
 )
 
 private data class InteractiveReadSnapshot(
-    val stdout: String,
-    val stderr: String,
+    val text: String,
     val sequence: Long,
     val truncated: Boolean,
 )
@@ -1206,8 +1261,7 @@ sealed interface TerminalInteractiveWriteOutcome {
 
 sealed interface TerminalInteractiveReadOutcome {
     data class Success(
-        val stdout: String,
-        val stderr: String,
+        val text: String,
         val mode: TerminalReadMode,
         val sequence: Long,
         val truncated: Boolean,

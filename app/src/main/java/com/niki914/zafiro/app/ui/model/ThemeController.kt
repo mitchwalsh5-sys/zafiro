@@ -1,9 +1,14 @@
 package com.niki914.zafiro.app.ui.model
 
+import android.content.Context
+import android.content.res.Configuration
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import com.niki914.logging.Logger
+import com.niki914.uikit.base.resolveThemeColorScheme
 import com.niki914.zafiro.app.ui.model.ThemeController.load
 import com.niki914.zafiro.app.ui.model.ThemeController.setMode
 import com.niki914.zafiro.app.ui.model.ThemeController.setSeedColor
@@ -17,15 +22,15 @@ enum class ThemeMode(val storageKey: String) {
 
     companion object {
         fun fromStorageKey(value: String?): ThemeMode =
-            entries.firstOrNull { it.storageKey == value } ?: System
+            entries.firstOrNull { it.storageKey == value } ?: Light
     }
 }
 
 /** 主题偏好：深浅色模式 + 种子色（空 = 跟随壁纸动态色）。 */
 data class ThemePrefs(
-    val mode: ThemeMode = ThemeMode.Dark,
+    val mode: ThemeMode = ThemeMode.Light,
     /** ARGB int；null = 壁纸动态色。 */
-    val seedColor: Int? = 0xFF52DBC9.toInt(),
+    val seedColor: Int? = 0xFFFABD00.toInt(),
 ) {
     fun resolveDarkTheme(systemDark: Boolean): Boolean = when (mode) {
         ThemeMode.System -> systemDark
@@ -78,5 +83,23 @@ object ThemeController {
                     "persist seed failed ${it.message}"
                 )
             }
+    }
+
+    /**
+     * 解析当前主题对应的 [androidx.compose.material3.ColorScheme.primaryContainer] ARGB 整数值。
+     * 与悬浮球 [FloatingBallCollapsedBall] 底色及 [BaseTheme] 保持完全同口径。
+     */
+    fun resolvePrimaryContainer(context: Context): Int {
+        val isSystemDark =
+            (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val isDark = prefs.resolveDarkTheme(isSystemDark)
+        val seed = prefs.seedColor?.let { Color(it) }
+        val scheme = resolveThemeColorScheme(
+            context = context,
+            darkTheme = isDark,
+            dynamicColor = prefs.seedColor == null,
+            seedColor = seed,
+        )
+        return scheme.primaryContainer.toArgb()
     }
 }

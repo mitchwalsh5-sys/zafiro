@@ -16,7 +16,6 @@ import com.niki914.zafiro.app.ui.model.ConfigureIntent
 import com.niki914.zafiro.app.ui.model.ConfigureScene
 import com.niki914.zafiro.app.ui.model.ConfigureUiState
 import com.niki914.zafiro.app.ui.model.ConfigureViewModel
-import com.niki914.zafiro.app.ui.model.EndpointMismatch
 import com.niki914.zafiro.app.ui.model.hasUnsavedChanges
 import com.niki914.zafiro.app.ui.nav.SavedConfigDetailPage
 
@@ -61,6 +60,7 @@ fun SavedConfigDetailContent(
                 ConfigureEffect.SettingsSaveSucceeded -> onSaveCompleted()
                 ConfigureEffect.ConfigDeleted -> onBack()
 
+                ConfigureEffect.FocusName -> pendingFocusField = ConfigureEditableField.Name
                 ConfigureEffect.FocusModel -> pendingFocusField = ConfigureEditableField.Model
                 ConfigureEffect.FocusApiKey -> pendingFocusField = ConfigureEditableField.ApiKey
                 ConfigureEffect.FocusEndpoint -> pendingFocusField = ConfigureEditableField.Endpoint
@@ -107,6 +107,7 @@ fun SavedConfigDetailContent(
             onToggleApiKeyVisibility = { viewModel.sendIntent(ConfigureIntent.ToggleApiKeyVisibility) },
             onProxyChange = { viewModel.sendIntent(ConfigureIntent.UpdateProxy(it)) },
             onMaxTokensChange = { viewModel.sendIntent(ConfigureIntent.UpdateMaxTokens(it)) },
+            onContextWindowChange = { viewModel.sendIntent(ConfigureIntent.UpdateContextWindow(it)) },
             onSave = { viewModel.sendIntent(ConfigureIntent.Save) },
             onShowModelCatalogSheet = { viewModel.sendIntent(ConfigureIntent.ShowModelCatalogSheet) },
             onHideModelCatalogSheet = { viewModel.sendIntent(ConfigureIntent.HideModelCatalogSheet) },
@@ -160,6 +161,7 @@ private fun SavedConfigDetailContentBody(
     onToggleApiKeyVisibility: () -> Unit,
     onProxyChange: (String) -> Unit,
     onMaxTokensChange: (String) -> Unit,
+    onContextWindowChange: (String) -> Unit,
     onSave: () -> Unit,
     onShowModelCatalogSheet: () -> Unit = {},
     onHideModelCatalogSheet: () -> Unit = {},
@@ -211,6 +213,7 @@ private fun SavedConfigDetailContentBody(
             onProtocolSelected = onProtocolSelected,
             onThinkingLevelSelected = onThinkingLevelSelected,
             onMaxTokensChange = onMaxTokensChange,
+            onContextWindowChange = onContextWindowChange,
         )
     }
 }

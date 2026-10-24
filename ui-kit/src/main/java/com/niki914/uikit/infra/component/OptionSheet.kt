@@ -20,7 +20,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.niki914.uikit.infra.shape.G2FieldShape
 import kotlinx.coroutines.launch
 
@@ -53,15 +55,24 @@ fun OptionSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,
         // 只圆上面两角：底边贴在屏幕外
-        shape = G2FieldShape(topStart = 32.dp, topEnd = 32.dp, bottomEnd = 0.dp, bottomStart = 0.dp),
+        shape = G2FieldShape(
+            topStart = 32.dp,
+            topEnd = 32.dp,
+            bottomEnd = 0.dp,
+            bottomStart = 0.dp
+        ),
         modifier = modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+        Column(Modifier
+            .fillMaxWidth()
+            .padding(bottom = 24.dp)) {
             Column(modifier = bodyModifier.fillMaxWidth()) {
                 if (title != null) {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp),
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
                     )
                 }

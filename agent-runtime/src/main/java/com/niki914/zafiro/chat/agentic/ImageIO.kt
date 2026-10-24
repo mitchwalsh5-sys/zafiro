@@ -3,9 +3,10 @@ package com.niki914.zafiro.chat.agentic
 import com.niki914.okia.ImageLoader
 import com.niki914.xposed.api.util.ContextProvider
 import com.niki914.zafiro.chat.agentic.buildin.BuiltinToolResult
+import com.niki914.zafiro.chat.agentic.image.ImageCodec
+import com.niki914.zafiro.chat.agentic.image.ImageFormat
 import com.niki914.zafiro.chat.agentic.image.IngestError
 import com.niki914.zafiro.chat.agentic.image.IngestResult
-import com.niki914.zafiro.chat.agentic.image.ImageCodec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
@@ -18,7 +19,7 @@ import java.io.File
  * 护栏：文件 ≤12MB（纵深防御，ingest 已保证落盘图小，但历史路径无保证）。
  */
 class AndroidImageLoader(
-    private val maxBytes: Int = com.niki914.zafiro.chat.agentic.image.ImageFormat.MAX_IMAGE_BYTES,
+    private val maxBytes: Int = ImageFormat.MAX_IMAGE_BYTES,
 ) : ImageLoader {
     override suspend fun load(path: String): ByteArray? = withContext(Dispatchers.IO) {
         try {
@@ -55,22 +56,23 @@ internal object SharedImageCodec {
 }
 
 /** ingest 成功 → 与 view_image/screenshot 共用的 data.image JSON 结果（契约两工具一致）。 */
-internal fun IngestResult.Ok.toImageToolResult(message: String): BuiltinToolResult = BuiltinToolResult.success(
-    message = message,
-    data = JsonObject(
-        mapOf(
-            "image" to JsonObject(
-                mapOf(
-                    "path" to JsonPrimitive(image.path),
-                    "mime_type" to JsonPrimitive(image.mimeType),
-                    "width" to JsonPrimitive(image.width),
-                    "height" to JsonPrimitive(image.height),
-                    "bytes" to JsonPrimitive(image.bytes),
+internal fun IngestResult.Ok.toImageToolResult(message: String): BuiltinToolResult =
+    BuiltinToolResult.success(
+        message = message,
+        data = JsonObject(
+            mapOf(
+                "image" to JsonObject(
+                    mapOf(
+                        "path" to JsonPrimitive(image.path),
+                        "mime_type" to JsonPrimitive(image.mimeType),
+                        "width" to JsonPrimitive(image.width),
+                        "height" to JsonPrimitive(image.height),
+                        "bytes" to JsonPrimitive(image.bytes),
+                    )
                 )
             )
         )
     )
-)
 
 /** IngestError → 工具错误码 JSON 的映射（供 ViewImageBuiltin / ScreenshotBuiltin 使用）。 */
 internal fun IngestError.toToolError(): Pair<String, String> = when (this) {
