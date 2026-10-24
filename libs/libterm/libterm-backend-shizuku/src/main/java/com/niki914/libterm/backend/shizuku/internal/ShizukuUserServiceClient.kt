@@ -3,6 +3,7 @@ package com.niki914.libterm.backend.shizuku.internal
 import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
+import android.os.Process
 import android.os.IBinder
 import android.os.RemoteException
 import com.niki914.libterm.SendResult
@@ -40,7 +41,7 @@ internal class ShizukuUserServiceClient(
     private val closed = AtomicBoolean(false)
     private val connectActive = AtomicBoolean(false)
     private val stateLock = Any()
-    private val userServiceTag = "$USER_SERVICE_TAG_PREFIX-${android.os.Process.myPid()}-${nextServiceId.incrementAndGet()}"
+    private val userServiceTag = "$USER_SERVICE_TAG_PREFIX-${Process.myPid()}-${nextServiceId.incrementAndGet()}"
     private val userServiceArgs = Shizuku.UserServiceArgs(
         ComponentName(
             context.packageName,

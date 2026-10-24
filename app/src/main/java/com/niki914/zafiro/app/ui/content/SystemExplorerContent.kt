@@ -187,6 +187,12 @@ fun SystemExplorerContent() {
                                     try {
                                         val manager = requireService<PermissionManager>()
                                         manager.request(Permission.SHIZUKU)
+                                    } catch (e: Exception) {
+                                        if (e is CancellationException) throw e
+                                        shizuku = ShizukuSnapshot(
+                                            status = PermissionState.FAILED.toUiLabel(),
+                                            identity = e.message ?: e.javaClass.simpleName,
+                                        )
                                     } finally {
                                         requestingShizuku = false
                                     }
@@ -322,7 +328,7 @@ private fun TermResult<com.niki914.libterm.runtime.CommandResult>.stdoutOrNull()
             }
             value.stdout.toByteArray().decodeToString()
         }
-        is TermResult.Failure -> null
+        is TermResult.Failure -> error(failure.toString())
     }
 }
 

@@ -52,6 +52,7 @@ internal class LlmStreamPipeline {
     ) {
         turnActiveFlow.value = true
         val startedAtMs = System.currentTimeMillis()
+        val eventMapper = LlmStreamEventMapper()
         var streamErrorReported = false
         var streamTerminated = false
         var firstFrameLogged = false
@@ -78,7 +79,7 @@ internal class LlmStreamPipeline {
                         loopOptions = LoopOptions(turnRetryPolicy = RetryPolicy(maxAttempts = 2)),
                     ),
                 ) { event ->
-                    val mapped = LlmStreamEventMapper.map(event, startedAtMs)
+                    val mapped = eventMapper.map(event, startedAtMs)
                     if (event is TurnEvent.TurnCompleted) {
                         logCacheAccounting(event.message)
                     }

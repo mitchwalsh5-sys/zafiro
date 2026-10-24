@@ -19,7 +19,7 @@ import com.niki914.zafiro.chat.ToolCallStatus
  * 工具事件映射为 T2 铺路：T1 无工具注册，事件不会出现，但映射逻辑完整。
  * 错误的 Zafiro 侧 code 映射留 T4（可重试维度，LlmErrorCode 暂不扩展）。
  */
-object LlmStreamEventMapper {
+class LlmStreamEventMapper {
     private const val LOG_TAG = "niki914_zafiro_LlmStreamEventMapper"
 
     /**

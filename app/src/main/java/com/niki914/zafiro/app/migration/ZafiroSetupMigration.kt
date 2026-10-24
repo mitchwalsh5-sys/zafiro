@@ -11,6 +11,7 @@ import com.niki914.zafiro.api.AgentManager
 import com.niki914.zafiro.api.model.isRunning
 import com.niki914.zafiro.service.requireService
 import org.json.JSONTokener
+import org.json.JSONObject
 import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.coroutineContext
 import java.io.File
@@ -63,7 +64,12 @@ object ZafiroSetupMigration {
                             }
                         }
                         if (relative.endsWith(".json", ignoreCase = true)) {
-                            JSONTokener(target.readText(Charsets.UTF_8)).nextValue()
+                            val json = JSONTokener(target.readText(Charsets.UTF_8))
+                            val value = json.nextValue()
+                            check(json.nextClean() == '\u0000') { "Invalid JSON in $relative" }
+                            if (relative == "local_settings.json" || relative.startsWith("settings/")) {
+                                check(value is JSONObject) { "Setup settings must be JSON objects: $relative" }
+                            }
                         }
                         files++
                     }
@@ -76,6 +82,9 @@ object ZafiroSetupMigration {
                     .forEach { source ->
                         val relative = source.relativeTo(staged).invariantSeparatorsPath
                         val destination = File(context.filesDir, relative)
+                        check(destination.canonicalPath.startsWith(context.filesDir.canonicalPath + File.separator)) {
+                            "Setup path escapes application storage"
+                        }
                         destination.parentFile?.mkdirs()
                         val atomic = AtomicFile(destination)
                         val stream = atomic.startWrite()

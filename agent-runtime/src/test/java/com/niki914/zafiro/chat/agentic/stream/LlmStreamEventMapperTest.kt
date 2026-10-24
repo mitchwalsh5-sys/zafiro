@@ -18,7 +18,25 @@ import org.junit.Rule
 import org.junit.Test
 import com.niki914.okia.error.LLMErrorCode as OkiaLLMErrorCode
 
+// 保护：each turn owns its text/thinking/retry state, including interleaved agent sessions.
 class LlmStreamEventMapperTest {
+    private val mapper = LlmStreamEventMapper()
+
+    @Test
+    fun interleavedSessionsKeepIndependentTextBaselines() {
+        val other = LlmStreamEventMapper()
+        mapper.map(TurnEvent.TextStarted(0, AssistantMessage(listOf(ContentBlock.Text("first")))), 0L)
+        other.map(TurnEvent.TextStarted(0, AssistantMessage(listOf(ContentBlock.Text("other")))), 0L)
+        val result = mapper.map(TurnEvent.TextDelta(
+            0, "!", AssistantMessage(listOf(ContentBlock.Text("first!"))),
+        ), 0L) as LlmStreamEvent.TextDelta
+        assertEquals("!", result.delta)
+        val otherResult = other.map(TurnEvent.TextDelta(
+            0, "?", AssistantMessage(listOf(ContentBlock.Text("other?"))),
+        ), 0L) as LlmStreamEvent.TextDelta
+        assertEquals("?", otherResult.delta)
+    }
+
 
     @get:Rule
     val silentLogger = SilentLoggerRule()
@@ -27,7 +45,7 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `TurnStarted maps to RoundStarted`() {
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnStarted("hello"),
             startedAtMs = 0L,
         )
@@ -37,13 +55,13 @@ class LlmStreamEventMapperTest {
     @Test
     fun `TextDelta maps with delta and cumulative fullText from partial`() {
         // 真实序列：先 TextStarted 建立基线，再 TextDelta（delta = partial - 累积）
-        LlmStreamEventMapper.map(
+        mapper.map(
             TurnEvent.TextStarted(0, AssistantMessage(content = listOf(ContentBlock.Text("he")))),
             startedAtMs = 0L,
         )
         val partial = AssistantMessage(content = listOf(ContentBlock.Text("helo")))
         val startedAtMs = System.currentTimeMillis() - 500L
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TextDelta(index = 0, delta = "lo", partial = partial),
             startedAtMs = startedAtMs,
         )
@@ -57,7 +75,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `TextStarted maps to full delta and following deltas are incremental`() {
         // OKIA 首 delta 在 TextStarted（不带增量文本）；Mapper 以 partial 全量作 delta
-        val started = LlmStreamEventMapper.map(
+        val started = mapper.map(
             TurnEvent.TextStarted(0, AssistantMessage(listOf(ContentBlock.Text("你好")))),
             0L,
         ) as LlmStreamEvent.TextDelta
@@ -65,7 +83,7 @@ class LlmStreamEventMapperTest {
         assertEquals("你好", started.fullText)
 
         // 后续 TextDelta：delta = partial - 已累积（增量），fullText = 累积
-        val next = LlmStreamEventMapper.map(
+        val next = mapper.map(
             TurnEvent.TextDelta(
                 0,
                 "！有什么",
@@ -83,14 +101,14 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `TextStarted marks segment start for downstream pacer reset`() {
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TextStarted(0, AssistantMessage(listOf(ContentBlock.Text("hi")))),
             0L,
         ) as LlmStreamEvent.TextDelta
         assertTrue(result.isSegmentStart)
 
         // 后续 Delta 非段起点
-        val next = LlmStreamEventMapper.map(
+        val next = mapper.map(
             TurnEvent.TextDelta(0, "!", AssistantMessage(listOf(ContentBlock.Text("hi!")))),
             0L,
         ) as LlmStreamEvent.TextDelta
@@ -99,12 +117,12 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `TextEnded resets accumulation for next block`() {
-        LlmStreamEventMapper.map(
+        mapper.map(
             TurnEvent.TextStarted(0, AssistantMessage(listOf(ContentBlock.Text("first")))),
             0L,
         )
         assertNull(
-            LlmStreamEventMapper.map(
+            mapper.map(
                 TurnEvent.TextEnded(
                     0,
                     "first",
@@ -114,7 +132,7 @@ class LlmStreamEventMapperTest {
         )
 
         // 下一块从新基线开始：TextStarted 全量，不带上一块残留
-        val next = LlmStreamEventMapper.map(
+        val next = mapper.map(
             TurnEvent.TextStarted(0, AssistantMessage(listOf(ContentBlock.Text("second")))),
             0L,
         ) as LlmStreamEvent.TextDelta
@@ -123,16 +141,16 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `TurnCompleted resets accumulation across turns`() {
-        LlmStreamEventMapper.map(
+        mapper.map(
             TurnEvent.TextStarted(0, AssistantMessage(listOf(ContentBlock.Text("answer1")))),
             0L,
         )
-        LlmStreamEventMapper.map(
+        mapper.map(
             TurnEvent.TurnCompleted(AssistantMessage(listOf(ContentBlock.Text("answer1")))),
             0L,
         )
 
-        val next = LlmStreamEventMapper.map(
+        val next = mapper.map(
             TurnEvent.TextStarted(0, AssistantMessage(listOf(ContentBlock.Text("answer2")))),
             0L,
         ) as LlmStreamEvent.TextDelta
@@ -145,7 +163,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `ToolRunning maps with tool call identity`() {
         val call = ContentBlock.ToolCall(id = "c1", name = "search", argumentsJson = "{}")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.ToolRunning(0, call, AssistantMessage(emptyList())),
             0L,
         )
@@ -157,7 +175,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `ToolSucceeded outcome Success maps to ToolSucceeded`() {
         val call = ContentBlock.ToolCall(id = "c1", name = "search", argumentsJson = "{}")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.ToolSucceeded(
                 0,
                 call,
@@ -173,7 +191,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `ToolSucceeded outcome Intercepted without error maps to ToolSucceeded`() {
         val call = ContentBlock.ToolCall(id = "c1", name = "search", argumentsJson = "{}")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.ToolSucceeded(
                 0,
                 call,
@@ -188,7 +206,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `ToolSucceeded outcome Intercepted with error maps to ToolFailed`() {
         val call = ContentBlock.ToolCall(id = "c1", name = "search", argumentsJson = "{}")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.ToolSucceeded(
                 0,
                 call,
@@ -204,7 +222,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `ToolSucceeded outcome Failure maps to ToolFailed`() {
         val call = ContentBlock.ToolCall(id = "c1", name = "search", argumentsJson = "{}")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.ToolSucceeded(
                 0,
                 call,
@@ -221,7 +239,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `ToolFailed maps message from outcome`() {
         val call = ContentBlock.ToolCall(id = "c1", name = "search", argumentsJson = "{}")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.ToolFailed(
                 0,
                 call,
@@ -240,7 +258,7 @@ class LlmStreamEventMapperTest {
         val partial = AssistantMessage(emptyList())
         val call = ContentBlock.ToolCall("c", "t", "{}")
 
-        val started = LlmStreamEventMapper.map(
+        val started = mapper.map(
             TurnEvent.ToolCallStarted(0, partial, callId = "c1", toolName = "terminal"),
             0L,
         )
@@ -253,13 +271,13 @@ class LlmStreamEventMapperTest {
             TurnEvent.ToolCallReady(0, call, partial),
         )
         dropped.forEach {
-            assertNull(LlmStreamEventMapper.map(it, 0L))
+            assertNull(mapper.map(it, 0L))
         }
     }
 
     @Test
     fun `RetryScheduled maps to Retrying event`() {
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.RetryScheduled(1, 3, 100L, "rate limit"),
             0L,
         )
@@ -273,12 +291,12 @@ class LlmStreamEventMapperTest {
     @Test
     fun `TurnFailed with RetryExhausted carries scheduled attempts`() {
         // attempts 来自 RetryScheduled 事件流（结构化），不反向解析错误串
-        LlmStreamEventMapper.map(TurnEvent.TurnStarted("q"), 0L)
-        LlmStreamEventMapper.map(TurnEvent.RetryScheduled(1, 3, 100L, "transport"), 0L)
-        LlmStreamEventMapper.map(TurnEvent.RetryScheduled(2, 3, 100L, "transport"), 0L)
-        LlmStreamEventMapper.map(TurnEvent.RetryScheduled(3, 3, 100L, "transport"), 0L)
+        mapper.map(TurnEvent.TurnStarted("q"), 0L)
+        mapper.map(TurnEvent.RetryScheduled(1, 3, 100L, "transport"), 0L)
+        mapper.map(TurnEvent.RetryScheduled(2, 3, 100L, "transport"), 0L)
+        mapper.map(TurnEvent.RetryScheduled(3, 3, 100L, "transport"), 0L)
         val error = LLMError(OkiaLLMErrorCode.RetryExhausted, "retry exhausted (Transport)")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnFailed(AssistantMessage(emptyList()), error),
             0L,
         )
@@ -290,7 +308,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `TurnFailed without retries has null attempts`() {
         val error = LLMError(OkiaLLMErrorCode.Transport, "connection reset")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnFailed(AssistantMessage(emptyList()), error),
             0L,
         )
@@ -300,12 +318,12 @@ class LlmStreamEventMapperTest {
     @Test
     fun `RetryScheduled resets text accumulation`() {
         val partial = assistantPartial("hello world")
-        LlmStreamEventMapper.map(TurnEvent.TextStarted(0, partial), 0L)
+        mapper.map(TurnEvent.TextStarted(0, partial), 0L)
 
-        LlmStreamEventMapper.map(TurnEvent.RetryScheduled(1, 3, 100L, "x"), 0L)
+        mapper.map(TurnEvent.RetryScheduled(1, 3, 100L, "x"), 0L)
 
         // 重试后成功尝试的全量重放应完整成为 delta（累积已重置）
-        val replay = LlmStreamEventMapper.map(
+        val replay = mapper.map(
             TurnEvent.TextStarted(0, assistantPartial("fresh text")),
             0L,
         ) as LlmStreamEvent.TextDelta
@@ -322,8 +340,8 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `ThinkingStarted maps to ThinkingStarted with fresh id and full text`() {
-        LlmStreamEventMapper.map(TurnEvent.TurnStarted("q"), 0L)
-        val result = LlmStreamEventMapper.map(
+        mapper.map(TurnEvent.TurnStarted("q"), 0L)
+        val result = mapper.map(
             TurnEvent.ThinkingStarted(1, thinkingPartial("deep think")),
             0L,
         )
@@ -332,12 +350,12 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `ThinkingDelta re-emits ThinkingStarted with same id and updated full text`() {
-        LlmStreamEventMapper.map(TurnEvent.TurnStarted("q"), 0L)
-        LlmStreamEventMapper.map(
+        mapper.map(TurnEvent.TurnStarted("q"), 0L)
+        mapper.map(
             TurnEvent.ThinkingStarted(1, thinkingPartial("dee")),
             0L,
         )
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.ThinkingDelta(1, "p", thinkingPartial("deep think")),
             0L,
         )
@@ -346,12 +364,12 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `ThinkingEnded maps to ThinkingEnded with final content`() {
-        LlmStreamEventMapper.map(TurnEvent.TurnStarted("q"), 0L)
-        LlmStreamEventMapper.map(
+        mapper.map(TurnEvent.TurnStarted("q"), 0L)
+        mapper.map(
             TurnEvent.ThinkingStarted(1, thinkingPartial("deep think")),
             0L,
         )
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.ThinkingEnded(1, "deep think", thinkingPartial("deep think")),
             0L,
         )
@@ -360,18 +378,18 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `New round reusing same index gets a distinct id (no merge across tool rounds)`() {
-        LlmStreamEventMapper.map(TurnEvent.TurnStarted("q"), 0L)
+        mapper.map(TurnEvent.TurnStarted("q"), 0L)
         // 第一轮：index=0 的思考块
-        val first = LlmStreamEventMapper.map(
+        val first = mapper.map(
             TurnEvent.ThinkingStarted(0, thinkingPartial("first block")),
             0L,
         )
-        LlmStreamEventMapper.map(
+        mapper.map(
             TurnEvent.ThinkingEnded(0, "first block", thinkingPartial("first block")),
             0L,
         )
         // 第二轮（工具轮后 StreamState 重建）：index 又回到 0，必须是新 id
-        val second = LlmStreamEventMapper.map(
+        val second = mapper.map(
             TurnEvent.ThinkingStarted(0, thinkingPartial("second block")),
             0L,
         )
@@ -381,21 +399,21 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `Thinking with blank text produces no event`() {
-        LlmStreamEventMapper.map(TurnEvent.TurnStarted("q"), 0L)
+        mapper.map(TurnEvent.TurnStarted("q"), 0L)
         assertNull(
-            LlmStreamEventMapper.map(
+            mapper.map(
                 TurnEvent.ThinkingStarted(0, thinkingPartial("")),
                 0L,
             )
         )
         assertNull(
-            LlmStreamEventMapper.map(
+            mapper.map(
                 TurnEvent.ThinkingDelta(0, "", thinkingPartial("  ")),
                 0L,
             )
         )
         assertNull(
-            LlmStreamEventMapper.map(
+            mapper.map(
                 TurnEvent.ThinkingEnded(0, "", thinkingPartial("")),
                 0L,
             )
@@ -404,12 +422,12 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `TurnAborted with active thinking maps to ThinkingEnded (interrupted counts as done)`() {
-        LlmStreamEventMapper.map(TurnEvent.TurnStarted("q"), 0L)
-        LlmStreamEventMapper.map(
+        mapper.map(TurnEvent.TurnStarted("q"), 0L)
+        mapper.map(
             TurnEvent.ThinkingStarted(3, thinkingPartial("half thought")),
             0L,
         )
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnAborted(AssistantMessage(emptyList()), StopCause.UserStop),
             0L,
         )
@@ -418,7 +436,7 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `TurnAborted without active thinking stays null`() {
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnAborted(AssistantMessage(emptyList()), StopCause.UserStop),
             0L,
         )
@@ -429,7 +447,7 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `TurnCompleted maps to Completed terminal marker`() {
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnCompleted(AssistantMessage(content = listOf(ContentBlock.Text("answer")))),
             0L,
         )
@@ -438,7 +456,7 @@ class LlmStreamEventMapperTest {
 
     @Test
     fun `TurnCompleted with Length maps to OutputTruncated error`() {
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnCompleted(
                 AssistantMessage(
                     content = listOf(ContentBlock.Text("cut off mid-sen")),
@@ -455,7 +473,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `TurnFailed maps to Error with mapped code`() {
         val error = LLMError(OkiaLLMErrorCode.Transport, "boom")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnFailed(AssistantMessage(emptyList()), error),
             0L,
         )
@@ -467,7 +485,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `TurnFailed maps Auth to LlmErrorCode Auth`() {
         val error = LLMError(OkiaLLMErrorCode.Auth, "invalid key")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnFailed(AssistantMessage(emptyList()), error),
             0L,
         )
@@ -477,7 +495,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `TurnFailed maps ContextOverflow to Parse`() {
         val error = LLMError(OkiaLLMErrorCode.ContextOverflow, "context too long")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnFailed(AssistantMessage(emptyList()), error),
             0L,
         )
@@ -488,7 +506,7 @@ class LlmStreamEventMapperTest {
     fun `TurnFailed with blank message yields null message`() {
         // 兜底文案归 UI/Service 层，mapper 原文透传不造字符串
         val error = LLMError(OkiaLLMErrorCode.Auth, " ")
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnFailed(AssistantMessage(emptyList()), error),
             0L,
         )
@@ -498,7 +516,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `TurnFailed with blank message and statusCode carries HTTP status message`() {
         val error = LLMError(OkiaLLMErrorCode.Parse, " ", statusCode = 404)
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnFailed(AssistantMessage(emptyList()), error),
             0L,
         )
@@ -508,7 +526,7 @@ class LlmStreamEventMapperTest {
     @Test
     fun `TurnIdleTimeout maps to Error with null message and IdleTimeout code`() {
         // 文案归 UI 层：mapper 只带类型，message 为空
-        val result = LlmStreamEventMapper.map(
+        val result = mapper.map(
             TurnEvent.TurnIdleTimeout(AssistantMessage(emptyList())),
             0L,
         )
@@ -520,9 +538,9 @@ class LlmStreamEventMapperTest {
     @Test
     fun `TurnAborted does not produce an error event`() {
         // Mapper 是单例有状态：先重置（真实使用中每个回合由 TurnStarted 触发重置）
-        LlmStreamEventMapper.map(TurnEvent.TurnStarted("q"), 0L)
+        mapper.map(TurnEvent.TurnStarted("q"), 0L)
         assertNull(
-            LlmStreamEventMapper.map(
+            mapper.map(
                 TurnEvent.TurnAborted(AssistantMessage(emptyList()), StopCause.UserStop),
                 0L,
             )
