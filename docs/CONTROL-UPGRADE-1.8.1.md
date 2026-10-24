@@ -1,6 +1,6 @@
 # Zafiro Control 1.8.1 upgrade audit
 
-Status: development candidate. Do not install until release build, tests, certificate comparison and device smoke checks succeed. No installed application was accessed or changed. `main` remains at `8b4e9cb6405f04a0f3eb1cbe6370460b43ec28e4`.
+Status: signed installation candidate, independently verified. CI tests, lint, signed release compilation and identity checks passed. Physical Nothing Phone (3a)/Android 17 beta smoke testing remains pending. No installed application was accessed or changed. `main` remains at `8b4e9cb6405f04a0f3eb1cbe6370460b43ec28e4`.
 
 ## Source selection and comparison
 
@@ -59,9 +59,23 @@ Signing remains exclusively in GitHub Actions using existing `SIGNING_KEYSTORE_B
 
 Baseline: successful stable build [37458270847](https://github.com/mitchwalsh5-sys/zafiro/actions/runs/37458270847), artifact `Zafiro-Control-1.5.3-control`, ID 11410262448, not expired at audit time. The baseline was downloaded and verified independently with apksigner. Its public signer SHA-256 digest is pinned in `.github/control-signing-cert.sha256`. The workflow verifies the candidate against that pin and checks package name/versionCode; verification remains usable after the old Actions artifact expires. It also produces `apk-verification.txt` with public certificate/identity/file-hash evidence. Availability of secret names in the workflow does not prove that their current values work; only a successful signed build does.
 
-Before re-enabling Actions, GitHub reported: “Workflows are not currently being run on this fork due to the scale of GitHub Actions usage. A repository maintainer can choose to re-enable these.” The connected GitHub API has no workflow-enable/dispatch capability, and the browser session is signed out. The maintainer reported re-enabling Actions during this session. The upgraded CI run and certificate comparison are now being started; no successful signature match is claimed yet.
+The verified build is [Actions run 40081095826](https://github.com/mitchwalsh5-sys/zafiro/actions/runs/40081095826), source commit `630afedef9e40febf5a51eeba6a2e5396f9c1978`. Its signing preflight confirmed that the configured GitHub keystore certificate equals the original stable APK certificate. The final APK passed both CI and independent local `apksigner`/`aapt` checks.
 
-After Actions is re-enabled, run **Release Build** with branch `upgrade/control-1.8.1-stability`. The branch push trigger also runs this workflow. It checks OKIA, business-agent, Shizuku backend, agent-runtime, app tests, lint, signed release compilation and APK identity/certificate compatibility. No merge into main is needed to build it.
+### Exact verification-script failure
+
+Run 40079636064 used an anchored sed expression expecting `Signer #1 certificate SHA-256 digest:`. The CI apksigner report instead uses `V2 Signer: certificate SHA-256 digest:`. Replaying the old expression against the CI report extracts an empty byte string, so the certificate equality guard fails even though the fingerprint is correct. This was a certificate-report parsing defect, not a changed signing identity or package ID.
+
+The corrected parser reads the certificate digest independently of the signer-label prefix and still requires exactly one complete matching SHA-256 fingerprint. Cryptographic signature verification, exact package validation and the versionCode upgrade check remain mandatory. The report is printed and the candidate is retained for diagnostic evidence.
+
+Verified artifact: `Zafiro-Control-1.8.1.apk`, 30,499,396 bytes.
+
+- Package: `com.niki914.zafiro.control`
+- Version: `1.8.1-control`, versionCode `15`
+- Debuggable: false
+- Certificate SHA-256: `39085cf7f70bed43adc7a55c14b5c75377fd438290564d96361422e692e441d2`
+- APK SHA-256: `5968e7c3c6a7361a520041250bb9bb485a19cf4748414fae68dfe9f4defdb732`
+
+The downloaded APK hash also matched the CI verification record. No new signing key was created or substituted.
 
 ## Installation and rollback constraints
 
@@ -71,13 +85,19 @@ Normal Android installation cannot downgrade versionCode 15 to 14. The older app
 
 ## Validation record
 
-- Python runtime: existing 14 tests passed locally (resource-handle warnings in existing tests).
-- Workflow YAML, resource XML parsing and git diff whitespace checks passed.
-- Added regression coverage: bounded DeepSeek queued heartbeats; post-inference heartbeat stalls; stalled-socket cancellation; wake demand with screen-on disabled; partial UI replacement while preserving a completed tool. Upstream segment-retry tests already cover reusing committed tool results without rerunning completed tools.
-- Android/Kotlin checks: see the latest validation update below.
-- Device/DeepSeek live API checks: not run; no connected phone or API credentials were accessed.
-- Signed release and baseline certificate comparison: blocked until Actions can run.
+| Check | Result |
+| --- | --- |
+| OKIA transport/agent loop | 447 passed |
+| Shizuku backend | 22 passed |
+| Agent runtime | 470 passed |
+| Business agent | 58 passed |
+| App | 420 passed |
+| Kotlin total | 1,417 passed, zero failures/errors/skips |
+| Python runtime | 14 passed locally |
+| App lint | Passed: zero errors, 89 warnings |
+| Release compilation/R8/signing | Passed in CI |
+| Schema 2→3→4 | Room tests passed; independent SQLite fixture retained conversation/tool-result rows |
+| APK signer/package/versionCode | Passed in CI and independently after download |
+| Physical phone/live DeepSeek sessions | Pending user device testing; no device or live API credentials accessed |
 
-### Local validation update
-
-OKIA: 447 tests, zero failures/errors/skips. Python runtime: 14 tests passed. The schema-2 fixture plus actual migration SQL retained a conversation row and tool-result row through schema 4 in SQLite. Android source and debug APK compilation succeeded. OKIA (447), Shizuku backend (22), business-agent (58) and agent-runtime (469) tests passed at this checkpoint. Nine app test classes could not initialise Robolectric because its test worker lacked the local network proxy; these are being rerun with the worker configuration corrected. A subsequent CI compile caught a mapper logger constant which was moved to a companion object. Five upstream lint errors were fixed (notification permission race, three Compose resource lookups, and a preview-only ViewModel warning). A timing-dependent persistence test was rewritten to await real ordered flow delivery rather than require StateFlow to retain rapid synthetic intermediate states. The notification and persistence test fixtures now initialise/reset their own fake settings context, preventing them from waiting indefinitely for a production context provider. Their focused 16-test run passed locally. Final CI validation is in progress. No signing compatibility claim is made.
+Persistence and notification test fixtures now initialise/reset their own settings context. Lifecycle-boundary tests await ordered delivery instead of relying on StateFlow to retain rapid synthetic intermediate states. No tests or signing checks were disabled.
