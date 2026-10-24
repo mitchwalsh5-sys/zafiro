@@ -34,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.niki914.libterm.runtime.LibTerm
+import com.niki914.libterm.runtime.Term
 import com.niki914.libterm.runtime.TermResult
 import com.niki914.uikit.infra.liquidScreenTopPadding
 import com.niki914.zafiro.business.permission.Permission
@@ -97,9 +98,18 @@ fun SystemExplorerContent() {
     }
 
     LaunchedEffect(context) {
-        while (true) {
-            shizuku = readShizukuSnapshot(context)
-            delay(4_000L)
+        var term = LibTerm.openShizukuTerm(context)
+        try {
+            while (true) {
+                shizuku = readShizukuSnapshot(term)
+                if (shizuku.status != "Granted") {
+                    withContext(NonCancellable) { term.close() }
+                    term = LibTerm.openShizukuTerm(context)
+                }
+                delay(4_000L)
+            }
+        } finally {
+            withContext(NonCancellable) { term.close() }
         }
     }
 
@@ -177,7 +187,6 @@ fun SystemExplorerContent() {
                                     try {
                                         val manager = requireService<PermissionManager>()
                                         manager.request(Permission.SHIZUKU)
-                                        shizuku = readShizukuSnapshot(context)
                                     } finally {
                                         requestingShizuku = false
                                     }
@@ -264,14 +273,13 @@ private fun ProcessCard(process: ProcessSnapshot) {
     }
 }
 
-private suspend fun readShizukuSnapshot(context: Context): ShizukuSnapshot {
+private suspend fun readShizukuSnapshot(term: Term): ShizukuSnapshot {
     val permissionManager = requireService<PermissionManager>()
     val permissionState = permissionManager.status(Permission.SHIZUKU)
     if (permissionState != PermissionState.GRANTED) {
         return ShizukuSnapshot(status = permissionState.toUiLabel())
     }
 
-    val term = LibTerm.openShizukuTerm(context)
     return try {
         val identity = term.exec("id").stdoutOrNull()?.trim().orEmpty()
         if (identity.isBlank()) {
@@ -302,8 +310,6 @@ private suspend fun readShizukuSnapshot(context: Context): ShizukuSnapshot {
             status = "Granted · shell error",
             identity = throwable.message?.take(200) ?: throwable.javaClass.simpleName,
         )
-    } finally {
-        withContext(NonCancellable) { term.close() }
     }
 }
 

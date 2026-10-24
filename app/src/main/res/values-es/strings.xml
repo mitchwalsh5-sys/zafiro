@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- App / Module -->
-    <string name="app_name">Zafiro</string>
+    <string name="app_name">Zafiro Control</string>
     <string name="xposed_desc">Conecte el asistente de voz a sus propios modelos\n\nCompatible con:\n\n- ColorOS Breeno\n- HyperOS XiaoAi</string>
 
     <!-- Onboarding -->
@@ -612,4 +612,9 @@
     <string name="text_action_error_save_failed">Error al guardar la acción.</string>
     <string name="text_action_error_delete_failed">Error al eliminar la acción.</string>
     <string name="crash_startup_copied_toast">Traza de pila copiada. Envíala al desarrollador.</string>
+    <string name="control_import_running">Detén las sesiones del agente antes de importar la configuración</string>
+    <string name="control_export_summary">Se exportaron %1$d archivos de configuración. Contienen credenciales; guárdalos en privado. No incluyen el historial de conversaciones.</string>
+    <string name="control_shizuku_required">Concede acceso a Shizuku en System Explorer antes de escanear.</string>
+    <string name="control_invalid_component">Componente de actividad no válido</string>
+    <string name="control_scan_timeout">El escaneo agotó el tiempo de espera</string>
 </resources>

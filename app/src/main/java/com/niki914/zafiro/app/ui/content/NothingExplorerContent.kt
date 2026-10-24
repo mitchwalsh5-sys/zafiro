@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.niki914.zafiro.app.R
 import com.niki914.libterm.runtime.LibTerm
 import com.niki914.libterm.runtime.TermResult
 import com.niki914.uikit.infra.liquidScreenTopPadding
@@ -190,7 +191,7 @@ private fun DiscoveryCard(item:DiscoveryItem,onLaunch:(()->Unit)?=null) {
 
 private suspend fun deepScan(context:android.content.Context):NothingDiscoveryState {
     if (requireService<PermissionManager>().status(Permission.SHIZUKU) != PermissionState.GRANTED) {
-        return NothingDiscoveryState(loading=false,error="Grant Shizuku in System Explorer before scanning.")
+        return NothingDiscoveryState(loading=false,error=context.getString(R.string.control_shizuku_required))
     }
     val term=LibTerm.openShizukuTerm(context)
     return try {
@@ -218,7 +219,7 @@ private suspend fun deepScan(context:android.content.Context):NothingDiscoverySt
         var scanWarning: String? = null
         val output=when(val result=term.exec(command,timeoutMillis=25_000L)) {
             is TermResult.Success -> {
-                check(!result.value.timedOut) { "Scan timed out" }
+                check(!result.value.timedOut) { context.getString(R.string.control_scan_timeout) }
                 scanWarning = result.value.stderr.toByteArray().decodeToString().trim()
                     .takeIf { it.isNotEmpty() }?.take(600)
                 result.value.stdout.toByteArray().decodeToString()
@@ -310,7 +311,7 @@ private suspend fun launchActivity(
     context:android.content.Context,
     component:String
 ):String {
-    if (!Regex("[A-Za-z0-9_.$]+/[A-Za-z0-9_.$]+").matches(component)) return "Invalid activity component"
+    if (!Regex("[A-Za-z0-9_.$]+/[A-Za-z0-9_.$]+").matches(component)) return context.getString(R.string.control_invalid_component)
     val term=LibTerm.openShizukuTerm(context)
     return try {
         when(val result=term.exec("am start -n \"$component\"",timeoutMillis=10_000L)) {

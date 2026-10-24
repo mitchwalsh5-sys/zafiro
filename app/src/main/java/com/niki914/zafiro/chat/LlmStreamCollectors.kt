@@ -157,7 +157,11 @@ private class FullTextProjector(
             }
 
             is LlmStreamEvent.Retrying -> {
-                // 瞬时状态行：与工具/思考行同层展示，流恢复后由后续事件自然覆盖消失
+                if (event.discardPartial) {
+                    val checkpoint = segments.indexOfLast { it is RenderSegment.Tool } + 1
+                    segments.subList(checkpoint, segments.size).clear()
+                    thinkingShown = false
+                }
                 segments += RenderSegment.Retrying(event)
                 listOf(LlmTextFrame(renderSegments(), isFirst = false, isFinal = false))
             }
@@ -211,6 +215,7 @@ private class ChunkTextProjector(
     private val assistantText = StringBuilder()
     private var lastWasToolLine = false
     private var thinkingShown = false
+    private var committedLength = 0
 
     fun apply(event: LlmStreamEvent): List<LlmTextFrame> {
         return when (event) {
@@ -253,11 +258,13 @@ private class ChunkTextProjector(
 
             is LlmStreamEvent.ToolSucceeded -> {
                 appendToolLine(event.call, labels.success)
+                committedLength = fullText.length
                 listOf(LlmTextFrame(fullText.toString(), isFirst = false, isFinal = false))
             }
 
             is LlmStreamEvent.ToolFailed -> {
                 appendToolLine(event.call, labels.failed)
+                committedLength = fullText.length
                 listOf(LlmTextFrame(fullText.toString(), isFirst = false, isFinal = false))
             }
 
@@ -274,6 +281,11 @@ private class ChunkTextProjector(
             }
 
             is LlmStreamEvent.Retrying -> {
+                if (event.discardPartial) {
+                    fullText.setLength(committedLength)
+                    retryLineStart = -1
+                    thinkingShown = false
+                }
                 appendRetryLine(event)
                 listOf(LlmTextFrame(fullText.toString(), isFirst = false, isFinal = false))
             }

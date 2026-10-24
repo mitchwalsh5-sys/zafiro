@@ -6,7 +6,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
-import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -44,7 +43,7 @@ class OkHttpEngineTest {
     // 保护：Stop must close a stalled socket before waiting for its blocking reader.
     @Test
     fun cancellingStalledStreamDoesNotWaitForReadTimeout() = runBlocking {
-        server.enqueue(MockResponse().setBody("data: waiting\n").setBodyDelay(30, TimeUnit.SECONDS))
+        server.enqueue(MockResponse().setBody("data: waiting\n").setHeader("Content-Length", "1000000"))
         val response = engine.stream(HttpRequest(
             "${server.url("/stream")}", "POST", emptyMap(), null,
             HttpTimeouts(5_000, 60_000, 5_000),

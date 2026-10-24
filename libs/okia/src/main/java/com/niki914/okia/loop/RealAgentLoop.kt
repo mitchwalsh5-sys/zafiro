@@ -283,7 +283,8 @@ internal class RealAgentLoop : AgentLoop {
                             val delay = turnPolicy!!.delayMs(turnAttempt)
                             onEvent(
                                 TurnEvent.RetryScheduled(
-                                    turnAttempt, turnMax, delay, "stream ${e.error.code.name}"
+                                    turnAttempt, turnMax, delay, "stream ${e.error.code.name}",
+                                    discardPartial = true
                                 )
                             )
                             delay(delay)
@@ -460,9 +461,9 @@ internal class RealAgentLoop : AgentLoop {
         }
     }
 
-    // idle 检测版收集：channel + select。任何 ProtocolEvent 到达重置计时
-    // （agent 活跃度，G7）；keep-alive（SseLine 层，不产出 ProtocolEvent）
-    // 不重置；流结束（channel close）但无 Completed → 协议不完整失败。
+    // Protocol activity resets idle. Providers may allow bounded pre-inference
+    // queue heartbeats; after the first protocol event only model progress counts.
+    // EOF without Completed remains an incomplete protocol response.
     private suspend fun collectWithIdle(
         request: LoopRequest,
         onEvent: suspend (TurnEvent) -> Unit,

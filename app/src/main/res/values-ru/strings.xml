@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Zafiro</string>
+    <string name="app_name">Zafiro Control</string>
     <string name="xposed_desc">Подключите свою модель к голосовому помощнику\n\nСейчас поддерживаются:\n\n- ColorOS Breeno\n- HyperOS XiaoAi</string>
     <string name="ui_onboard_startup_demo_button">Начать</string>
     <string name="ui_onboard_provider_pick_title">Выберите провайдера</string>
@@ -565,4 +565,9 @@
     <string name="text_action_error_save_failed">Не удалось сохранить действие.</string>
     <string name="text_action_error_delete_failed">Не удалось удалить действие.</string>
     <string name="crash_startup_copied_toast">Трассировка стека скопирована. Отправьте её разработчику.</string>
+    <string name="control_import_running">Перед импортом настроек остановите активные сеансы агента</string>
+    <string name="control_export_summary">Экспортировано файлов настроек: %1$d. Они содержат учётные данные; храните их конфиденциально. История разговоров не включена.</string>
+    <string name="control_shizuku_required">Перед сканированием предоставьте доступ Shizuku в System Explorer.</string>
+    <string name="control_invalid_component">Недопустимый компонент активности</string>
+    <string name="control_scan_timeout">Время сканирования истекло</string>
 </resources>

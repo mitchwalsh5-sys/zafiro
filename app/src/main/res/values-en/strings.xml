@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- App / Module -->
-    <string name="app_name">Zafiro</string>
+    <string name="app_name">Zafiro Control</string>
     <string name="xposed_desc">Empower your voice assistant with your own models\n\nCurrently supported:\n\n- ColorOS Breeno\n- HyperOS XiaoAi</string>
 
     <!-- Onboarding -->
@@ -612,4 +612,9 @@
     <string name="text_action_error_save_failed">Failed to save action.</string>
     <string name="text_action_error_delete_failed">Failed to delete action.</string>
     <string name="crash_startup_copied_toast">Stack trace copied to clipboard. Please send it to the developer.</string>
+    <string name="control_import_running">Stop running agent sessions before importing setup</string>
+    <string name="control_export_summary">Exported %1$d setup files. Contains credentials; keep private. Conversation history is not included.</string>
+    <string name="control_shizuku_required">Grant Shizuku in System Explorer before scanning.</string>
+    <string name="control_invalid_component">Invalid activity component</string>
+    <string name="control_scan_timeout">Scan timed out</string>
 </resources>

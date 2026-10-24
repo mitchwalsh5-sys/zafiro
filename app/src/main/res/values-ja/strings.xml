@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- App / Module -->
-    <string name="app_name">Zafiro</string>
+    <string name="app_name">Zafiro Control</string>
     <string name="xposed_desc">音声アシスタントに独自のモデル機能を連携\n\n対応中:\n\n- ColorOS Breeno\n- HyperOS XiaoAi</string>
 
     <!-- Onboarding -->
@@ -611,4 +611,9 @@
     <string name="text_action_error_save_failed">アクションの保存に失敗しました。</string>
     <string name="text_action_error_delete_failed">アクションの削除に失敗しました。</string>
     <string name="crash_startup_copied_toast">スタックトレースをコピーしました。開発者に送信してください。</string>
+    <string name="control_import_running">設定をインポートする前に実行中のエージェントを停止してください</string>
+    <string name="control_export_summary">設定ファイルを %1$d 件エクスポートしました。認証情報を含むため非公開で保管してください。会話履歴は含まれません。</string>
+    <string name="control_shizuku_required">スキャン前に System Explorer で Shizuku の権限を許可してください。</string>
+    <string name="control_invalid_component">無効なアクティビティコンポーネント</string>
+    <string name="control_scan_timeout">スキャンがタイムアウトしました</string>
 </resources>

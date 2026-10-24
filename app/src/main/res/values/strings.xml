@@ -611,4 +611,9 @@
     <string name="text_action_error_save_failed">保存动作失败。</string>
     <string name="text_action_error_delete_failed">删除动作失败。</string>
     <string name="crash_startup_copied_toast">堆栈信息已复制，请提交给开发者</string>
+    <string name="control_import_running">Stop running agent sessions before importing setup</string>
+    <string name="control_export_summary">Exported %1$d setup files. Contains credentials; keep private. Conversation history is not included.</string>
+    <string name="control_shizuku_required">Grant Shizuku in System Explorer before scanning.</string>
+    <string name="control_invalid_component">Invalid activity component</string>
+    <string name="control_scan_timeout">Scan timed out</string>
 </resources>

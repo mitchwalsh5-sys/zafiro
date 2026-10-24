@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- App / Module -->
-    <string name="app_name">Zafiro</string>
+    <string name="app_name">Zafiro Control</string>
     <string name="xposed_desc">讓語音助理接入你自己的模型能力\n\n現已支援：\n\n- ColorOS 小布助手\n- HyperOS 小愛同學</string>
 
     <!-- Onboarding -->
@@ -596,4 +596,9 @@
     <string name="text_action_error_save_failed">儲存動作失敗。</string>
     <string name="text_action_error_delete_failed">刪除動作失敗。</string>
     <string name="crash_startup_copied_toast">堆疊資訊已複製，請提交給開發者</string>
+    <string name="control_import_running">匯入設定前請停止執行中的代理工作階段</string>
+    <string name="control_export_summary">已匯出 %1$d 個設定檔。內含憑證，請妥善保密。不包含對話記錄。</string>
+    <string name="control_shizuku_required">掃描前請在 System Explorer 授予 Shizuku 權限。</string>
+    <string name="control_invalid_component">無效的活動元件</string>
+    <string name="control_scan_timeout">掃描逾時</string>
 </resources>

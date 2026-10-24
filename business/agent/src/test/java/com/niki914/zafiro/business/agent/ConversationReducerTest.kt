@@ -20,6 +20,20 @@ import org.junit.Test
  */
 class ConversationReducerTest {
 
+    // 保护：automatic stream retry removes partial text without dropping completed tool results.
+    @Test
+    fun interruptedSegmentIsReplacedWhileCompletedToolsAreRetained() {
+        val started = startTurn("diagnose")
+        val completed = reduce(started, LlmStreamEvent.ToolSucceeded(
+            call = call("c1", "shell", "{}"), outputText = "uid=2000",
+        ))
+        val partial = reduce(completed, LlmStreamEvent.TextDelta("partial", "partial", 1f))
+        val retried = reduce(partial, LlmStreamEvent.Retrying(1, 2, 500, "stream", discardPartial = true))
+        val blocks = retried.conversation.turns.last().blocks
+        assertTrue(blocks.none { it is TurnBlock.Text })
+        assertTrue(blocks.filterIsInstance<TurnBlock.Tool>().single().outcome is ToolOutcome.Succeeded)
+    }
+
     @Test
     fun turnIdAndBlockIdArePositionalAndPure() {
         assertEquals("t0", turnIdAt(0).value)

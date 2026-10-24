@@ -178,12 +178,14 @@ object LlmStreamEventMapper {
             // 让成功尝试的全量重放与 UI 累积重新对齐（避免重复/缺段）。
             is TurnEvent.RetryScheduled -> {
                 accumulatedText = ""
+                if (event.discardPartial) clearActiveThinking()
                 retryAttemptsScheduled = event.attempt
                 LlmStreamEvent.Retrying(
                     attempt = event.attempt,
                     maxAttempts = event.maxAttempts,
                     delayMs = event.delayMs,
                     reason = event.reason,
+                    discardPartial = event.discardPartial,
                 )
             }
 

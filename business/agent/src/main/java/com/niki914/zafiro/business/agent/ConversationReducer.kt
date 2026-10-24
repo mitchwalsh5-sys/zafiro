@@ -180,8 +180,14 @@ internal object ConversationReducer {
                     turn.clearRetrying().appendFailure(turnIndex, event),
                 )
 
-            is LlmStreamEvent.Retrying ->
-                state.withTurn(turnIndex, turn.replaceRetrying(turnIndex, event))
+            is LlmStreamEvent.Retrying -> {
+                val retained = if (event.discardPartial) {
+                    turn.copy(blocks = turn.blocks.dropLastWhile {
+                        it !is TurnBlock.Tool || it.outcome == null
+                    })
+                } else turn
+                state.withTurn(turnIndex, retained.replaceRetrying(turnIndex, event))
+            }
 
             LlmStreamEvent.Completed -> state
         }

@@ -92,7 +92,8 @@ sealed interface TurnEvent {
         val attempt: Int,
         val maxAttempts: Int,
         val delayMs: Long,
-        val reason: String
+        val reason: String,
+        val discardPartial: Boolean = false,
     ) : TurnEvent
 
     /** 回合正常结束。最终消息已带 stopReason（Stop / Length）。 */
