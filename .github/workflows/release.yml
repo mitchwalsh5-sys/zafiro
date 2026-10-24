@@ -14,7 +14,29 @@ permissions:
   actions: read
 
 jobs:
+  signing-preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare existing keystore certificate with installed-build identity
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CONTROL_PREFLIGHT_KEYSTORE="$RUNNER_TEMP/control-preflight.jks"
+          trap 'rm -f "$CONTROL_PREFLIGHT_KEYSTORE" "$RUNNER_TEMP/control-signing.der"' EXIT
+          test -n "$KEYSTORE_BASE64" && test -n "$SIGNING_PASSWORD"
+          printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > "$CONTROL_PREFLIGHT_KEYSTORE"
+          keytool -exportcert -keystore "$CONTROL_PREFLIGHT_KEYSTORE" -storepass "$SIGNING_PASSWORD" -alias nexus_key -file "$RUNNER_TEMP/control-signing.der" >/dev/null
+          CONTROL_EXPECTED_CERT=$(tr -d '[:space:]' < .github/control-signing-cert.sha256)
+          CONTROL_ACTUAL_CERT=$(sha256sum "$RUNNER_TEMP/control-signing.der" | cut -d ' ' -f1)
+          echo "Original stable certificate SHA-256: $CONTROL_EXPECTED_CERT"
+          echo "Configured keystore certificate SHA-256: $CONTROL_ACTUAL_CERT"
+          test "$CONTROL_ACTUAL_CERT" = "$CONTROL_EXPECTED_CERT"
+
   build:
+    needs: signing-preflight
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -81,16 +103,28 @@ jobs:
             -PRELEASE_KEY_ALIAS="nexus_key" \
             -PRELEASE_KEY_PASSWORD="$SIGNING_PASSWORD"
 
+      - name: Preserve signed candidate for verification diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: Control-signed-candidate-pending-verification
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
       - name: Verify APK identity and established signing certificate
         run: |
           set -euo pipefail
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
           AAPT=$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -1)
           "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/candidate-cert.txt"
-          EXPECTED_CERT=$(tr -d '[:space:]' < .github/control-signing-cert.sha256)
-          ACTUAL_CERT=$(sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p' "$RUNNER_TEMP/candidate-cert.txt")
-          [[ "$EXPECTED_CERT" =~ ^[a-f0-9]{64}$ ]]
-          test "$ACTUAL_CERT" = "$EXPECTED_CERT"
+          cat "$RUNNER_TEMP/candidate-cert.txt"
+          python3 - <<'PYCODE'
+          import re
+          from pathlib import Path
+          expected=Path(".github/control-signing-cert.sha256").read_text().strip().lower()
+          report=Path(__import__("os").environ["RUNNER_TEMP"], "candidate-cert.txt").read_text()
+          actual=re.findall(r"certificate SHA-256 digest:\s*([0-9a-fA-F]{64})",report)
+          assert actual == [expected], f"Certificate mismatch: expected {expected}, actual {actual}"
+          PYCODE
           "$AAPT" dump badging app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/candidate-badging.txt"
           head -1 "$RUNNER_TEMP/candidate-badging.txt" > apk-verification.txt
           python3 - <<'PYCODE'
