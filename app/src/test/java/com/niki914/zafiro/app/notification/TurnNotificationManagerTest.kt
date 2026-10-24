@@ -50,6 +50,7 @@ class TurnNotificationManagerTest {
             FakeApplicationService(context as Application, currentActivity = mockActivity)
 
         TurnNotificationManager.init(context as Application)
+        XRepo.resetForTest()
         XRepo.installStoreForTest(FakeDomainSettingsStore())
         XRepo.init(context)
         installService<NotificationChannelManager>(fakeChannelManager)

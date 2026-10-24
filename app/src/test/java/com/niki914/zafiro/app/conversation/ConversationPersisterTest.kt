@@ -15,6 +15,8 @@ import com.niki914.zafiro.api.model.AgentState
 import com.niki914.zafiro.api.model.ApprovalRequest
 import com.niki914.zafiro.api.model.TurnOutcome
 import com.niki914.zafiro.app.util.SilentLoggerRule
+import com.niki914.zafiro.repo.XRepo
+import com.niki914.zafiro.repo.FakeDomainSettingsStore
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +55,9 @@ class ConversationPersisterTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        XRepo.resetForTest()
+        XRepo.installStoreForTest(FakeDomainSettingsStore())
+        XRepo.init(context)
         context.deleteDatabase(DB_NAME)
         ConversationRepo.init(context)
     }
@@ -60,6 +65,7 @@ class ConversationPersisterTest {
     @After
     fun tearDown() = runTest {
         ConversationPersister.resetForTest()
+        XRepo.resetForTest()
         ConversationRepo.closeForTest()
         context.deleteDatabase(DB_NAME)
     }
