@@ -20,7 +20,9 @@ import com.niki914.zafiro.chat.ToolCallStatus
  * 错误的 Zafiro 侧 code 映射留 T4（可重试维度，LlmErrorCode 暂不扩展）。
  */
 class LlmStreamEventMapper {
-    private const val LOG_TAG = "niki914_zafiro_LlmStreamEventMapper"
+    private companion object {
+        const val LOG_TAG = "niki914_zafiro_LlmStreamEventMapper"
+    }
 
     /**
      * 当前正在流式的文本块已累积文本（跨事件状态）。

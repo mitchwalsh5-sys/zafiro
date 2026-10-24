@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalContext
 import com.niki914.uikit.infra.nav.pageViewModel
 import com.niki914.zafiro.app.ui.content.OnboardingPreferencesContent
@@ -21,6 +22,7 @@ internal fun OnboardingPreferencesRoute(
     val viewModel = pageViewModel<OnboardingPreferencesViewModel>()
     val uiState by viewModel.uiStateFlow.collectAsState()
     val context = LocalContext.current
+    val resources = LocalResources.current
 
     LaunchedEffect(Unit) {
         viewModel.sendIntent(OnboardingPreferencesIntent.Load)
@@ -32,7 +34,7 @@ internal fun OnboardingPreferencesRoute(
                 is OnboardingPreferencesEffect.ShowToast -> {
                     Toast.makeText(
                         context,
-                        context.getString(effect.messageRes),
+                        resources.getString(effect.messageRes),
                         Toast.LENGTH_SHORT,
                     ).show()
                 }

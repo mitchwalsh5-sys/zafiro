@@ -387,10 +387,14 @@ class AgentRuntimeService : Service() {
                 .setAutoCancel(true)
 
             contentIntent?.let { builder.setContentIntent(it) }
-            NotificationManagerCompat.from(this@AgentRuntimeService).notify(
-                notificationId(title, content),
-                builder.build()
-            )
+            try {
+                NotificationManagerCompat.from(this@AgentRuntimeService).notify(
+                    notificationId(title, content),
+                    builder.build()
+                )
+            } catch (e: SecurityException) {
+                Logger.w(LOG_TAG, "Notification permission changed before posting", e)
+            }
         }
 
         private fun ensureNotificationChannel() {

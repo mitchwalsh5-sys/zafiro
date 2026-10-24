@@ -37,6 +37,7 @@ fun CrashReportDialog(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val copiedMessage = stringResource(R.string.crash_copied_toast)
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
@@ -126,7 +127,7 @@ fun CrashReportDialog(
                     }
                     Toast.makeText(
                         context,
-                        context.getString(R.string.crash_copied_toast),
+                        copiedMessage,
                         Toast.LENGTH_SHORT,
                     ).show()
                 },

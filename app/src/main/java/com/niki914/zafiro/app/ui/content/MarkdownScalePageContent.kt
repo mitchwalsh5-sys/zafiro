@@ -1,5 +1,7 @@
 package com.niki914.zafiro.app.ui.content
 
+import android.annotation.SuppressLint
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -154,6 +156,8 @@ fun MarkdownScalePageContent(
     widthDp = 420,
     heightDp = 840,
 )
+// Preview owns its standalone model and has no navigation ViewModelStore.
+@SuppressLint("ViewModelConstructorInComposable")
 @Composable
 private fun MarkdownScalePagePreview() {
     BaseTheme {
