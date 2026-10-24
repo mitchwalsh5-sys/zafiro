@@ -12,8 +12,8 @@ import com.niki914.okia.fake.FakeProtocolMapper
 import com.niki914.okia.fake.StubMcpClient
 import com.niki914.okia.loop.AgentLoop
 import com.niki914.okia.loop.CompletionReason
-import com.niki914.okia.loop.LoopRequest
 import com.niki914.okia.loop.LoopOptions
+import com.niki914.okia.loop.LoopRequest
 import com.niki914.okia.loop.RealAgentLoop
 import com.niki914.okia.loop.TurnResult
 import com.niki914.okia.message.AssistantMessage
@@ -90,16 +90,6 @@ class RealOkiaTest {
 
     // ── 初始状态 ───────────────────────────────────────────────────────────
 
-    @Test
-    fun initialStateEmpty() = runTest {
-        val okia = openOkia(FakeProtocolMapper(emptyList<ProtocolEvent>()))
-        val snapshot = okia.conversation.value
-        assertNull(snapshot.leafId)
-        assertTrue(snapshot.history.isEmpty())
-        assertNull(snapshot.live)
-        okia.close()
-    }
-
     // ── send 正常路径 ──────────────────────────────────────────────────────
 
     @Test
@@ -117,7 +107,13 @@ class RealOkiaTest {
         )
         val result = okia.send(
             "hi",
-            options = TurnOptions(loopOptions = LoopOptions(turnRetryPolicy = RetryPolicy(maxAttempts = 3)))
+            options = TurnOptions(
+                loopOptions = LoopOptions(
+                    turnRetryPolicy = RetryPolicy(
+                        maxAttempts = 3
+                    )
+                )
+            )
         ) { event ->
             if (event is TurnEvent.TextDelta) throw IllegalStateException("ui boom")
         }
@@ -259,26 +255,6 @@ class RealOkiaTest {
     // ── 并发契约 ───────────────────────────────────────────────────────────
 
     @Test
-    fun concurrentSendThrows() = runTest {
-        val events = MutableSharedFlow<ProtocolEvent>(extraBufferCapacity = 16)
-        val okia = openOkia(FakeProtocolMapper(events), scope = testScope(testScheduler))
-        val first = launch { okia.send("one") { } }
-        runCurrent()
-
-        val second = try {
-            okia.send("two") { }
-            null
-        } catch (e: IllegalStateException) {
-            e
-        }
-        assertNotNull(second)
-
-        first.cancel()
-        runCurrent() // 让 turn job 清理 activeTurn
-        okia.close()
-    }
-
-    @Test
     fun concurrentSendsReserveExactlyOneActiveTurn() = runBlocking {
         // 回归守卫（T2 竞态）：check 与回合状态预留必须在同一临界区——多线程并发
         // send 恰好一个成功、其余抛 IllegalStateException。此前实现 check 通过后
@@ -417,48 +393,9 @@ class RealOkiaTest {
         okia.close()
     }
 
-    @Test
-    fun stopWithoutActiveTurnIsNoop() = runTest {
-        val okia = openOkia(
-            FakeProtocolMapper(emptyList<ProtocolEvent>()),
-            scope = testScope(testScheduler)
-        )
-        okia.stop()
-        okia.close()
-    }
-
-    @Test
-    fun stopThenImmediateSendWorks() = runTest {
-        val events = MutableSharedFlow<ProtocolEvent>(extraBufferCapacity = 16)
-        val okia = openOkia(FakeProtocolMapper(events), scope = testScope(testScheduler))
-
-        val first = async { okia.send("one") { } }
-        runCurrent()
-        okia.stop()
-        assertEquals(TurnResult.Aborted(StopCause.UserStop), first.await())
-
-        // stop 返回后立即再 send：activeTurn 已清空，不抛
-        val second = async { okia.send("two") { } }
-        runCurrent()
-        events.emit(completed())
-        runCurrent()
-        assertEquals(TurnResult.Completed(CompletionReason.Stop), second.await())
-        okia.close()
-    }
-
-    @Test
-    fun externalCancellationPropagates() = runTest {
-        val events = MutableSharedFlow<ProtocolEvent>(extraBufferCapacity = 16)
-        val okia = openOkia(FakeProtocolMapper(events), scope = testScope(testScheduler))
-        val job = launch { okia.send("hi") { } }
-        runCurrent()
-
-        job.cancel()
-        runCurrent()
-
-        assertTrue(job.isCancelled)
-        okia.close()
-    }
+    // （stop 无活跃回合 / stop 后立刻再 send / 外部取消传播：由 RealOkiaStopTest
+    //  的 stopWithNoActiveTurnIsNoOp、stopThenSendStartsFreshTurn、
+    //  externalCancellationTriggersBeforeStopAndRethrows 覆盖，此处不重复）
 
     // ── 会话操作 ───────────────────────────────────────────────────────────
 

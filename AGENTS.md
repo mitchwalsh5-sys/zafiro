@@ -12,6 +12,7 @@
 ./
 ├── .agents/skills/      # SKILLs 真实目录
 ├── .claude/skills/      # .agents/skills 的软链，不用修改这里的文件
+├── .githooks/           # 提交前坏味道检查；规则、放行、清理方式见其 README.md
 ├── app/                 # 主应用：Compose UI、AgentRuntimeService、Xposed 钩子
 ├── business/            # 业务核心层（契约与实现分离）
 │   ├── api/             # 业务对外公共契约接口
@@ -33,17 +34,51 @@
     └── libterm/         # 终端库（含多个后端：libsu, shizuku, ssh 等）
 ```
 
+### MVI 架构
+
+项目强制使用 MVI 心智：UI 只发意图、只读 VM 的 State，VM 通过更新 State 驱动 UI。基类见 ui-kit 的 ComposeMVIViewModel
+
+State 与 Effect 的区别是持久与一次性，分界的判据是「换个时间再读还成立吗」：列表数据、弹窗开关属于 State；Toast、聚焦、退出页面属于 Effect，只发生一次、没接住就没了
+
+弹窗最容易误判：触发弹窗是一次动作，但「弹窗开着」是界面当前的样子，重组、旋转、被压栈后回来都要能读到同一个答案，所以它是 State
+
 ### 宿主 / Host
 
-本项目通过 LSPosed 对 com.heytap.speechassist 等应用做 Hook，将系统语音助手的回答换成 Zafiro Agent 回答，具体实现是通过 Binder + AgentRuntimeService。当前的实现重点是，复杂的数据结构从不穿过 Binder，即，复杂的数据结构留在主进程，在 map 后喂给宿主，而宿主侧 Binder Client 得到纯文本，直接无脑 render，通过这种方式，我们降低了在数据结构所需要投入的成本
+本项目通过 LSPosed 对 com.heytap.speechassist 等应用做 Hook，将系统语音助手的回答换成 Zafiro Agent 回答，具体实现是通过 Binder + AgentRuntimeService。当前的实现重点是，复杂的数据结构从不穿过 Binder，IPC 传递纯语义数据（Thinking、Tools、Content）。宿主架构采用分层治理：上层 `*Hook`（如 `BreenoHook`）为纯胶水调度层，严禁堆砌反射与类名硬编码
 
-我们把取代原生 agent 的功能称为 takeover / 接管。宿主是比较边缘的业务，在重要决策时，不应该为了宿主的业务而去妥协，应该牺牲宿主
+我们把取代原生语音助手的功能称为 换源 / takeover / 接管。宿主是比较边缘的业务，在重要决策时，不应该为了宿主的业务而去妥协，应该牺牲宿主
 
 ### 主界面 / Home / Compose
 
-这些都是指应用的主入口，Compose UI，具体的对话是在 HomChatViewModel 内通过 Agent API 维护
+这些都是指应用的主入口，Compose UI，具体的对话是在 HomChatViewModel 内通过 Agent API 维护。Compose 必须是无状态的，从配套的 MVI ViewModel 里取数据
 
 这是整个应用的根基，它的重要性和优先级最高
+
+### UI 框架 / ui-kit
+
+导航、导航栏、弹窗、设置项都用 ui-kit 里既定的那套，不要另起一套。实现涉及导航、ViewModel、弹窗的业务前 MUST 调研已有代码作为参考
+
+#### 导航
+
+导航是自行实现的（ui-kit 的 nav 包），而不是使用 nav3。每个 entry 自带 viewmodel 生命周期，页面 VM 要通过框架拿，不要自己去取
+
+push 分正推与从左推（onPushFromLeft）两个方向，返回要配对使用；返回按钮的位置也跟着方向走，正向推入在左上角，从左推入在右上角
+
+#### 导航栏与左右上角按钮
+
+导航栏指 LiquidScreen 顶部的动作条，只有左右两个图标槽，内容由页面通过 PageChromeContribution 覆盖，页面不自己画
+
+背景色与标题由滚动状态自行感知切换，大部分页面不需要参与；左右按钮通常指这两个图标槽
+
+#### 弹窗类
+
+约定使用 LiquidDialog（ConfirmationLiquidDialog、SingleChoiceLiquidDialog 等），它必须挂在 LiquidScreen 的内容树里，返回键由弹窗自己接管
+
+BottomSheet 用 OptionSheet
+
+#### 设置项
+
+设置页、设置列表、设置详情统一用 ui-kit 的 Settings* 组件（页面骨架、分组卡片、行、分隔线都有现成的），如无明确要求，禁止手搓
 
 ### 对话列表
 
@@ -65,9 +100,13 @@ AI 对话通常是以 list 的形式存放 messages，同时只会有一个对�
 
 ### IPC
 
-目前来说，agent 的对话功能是限定在主进程之内的，虽然有一个宿主的业务，Agent 相关的调用逻辑依然用 Binder 包裹在主进程之内
+目前来说，Zafiro Agent 的对话功能是限定在主进程之内的，虽然有一个宿主的业务，Agent 相关的调用逻辑依然用 Binder 包裹在主进程之内
 
 项目通过 Chaquopy 实现 Python 能力支持，在单独的 py 进程中运行代码
+
+### 日志与调试
+
+调试构建额外把同一条日志落到沙箱，如果 logcat 被冲掉了可以用 adb 把日志拉出来看。详情通过调用 `zafiro-qa` 技能来了解
 
 ---
 
@@ -76,10 +115,15 @@ AI 对话通常是以 list 的形式存放 messages，同时只会有一个对�
 ### 共识
 
 - 若某项功能实现难度高（难度评分超过 6/10）且 ROI 较低，在着手开发前应先与用户协商功能范围
-- 没有明确要求提交时，不提交。等待用户验收
-- 提交信息和 PR 标题均使用英文，采用 `feat: did something` 这样的格式；标题简洁明了，不带模块名，补充说明写在正文中
-- 未经允许禁止对做安卓做安装应用等写操作
+- 提交信息和 PR 标题均使用英文，采用 `feat: did something` 这样的格式；标题简洁明了，不带模块名，补充说明写在正文中。PR 使用 gh CLI 完成
 - 搜索用 `rg`，不要 `grep -r`。 `rg` 默认读 `.gitignore`，自动排除 `**/build/`；`grep -r` 会扫到 build 与 `.git`
+
+### 边界
+
+- 没有明确要求提交时，不提交。等待用户验收
+- 未经允许禁止对做安卓做安装应用等写操作
+- 用户提问（尤其是探讨、假设性问题或一般疑问句）时必须直接作答，严禁产生例如代码变更等副作用。典型反面例子：用户问“这个地方如果我做 XX 操作会怎样？”或询问某一情况，AI 却以发现了漏洞或其他原因擅自开始修改
+- 理解用户指令必须紧密结合上下文，严禁盲目粗暴操作。典型反面例子：用户要求“确保工作区的改动干净”，AI 却不过脑子直接全盘回退导致有效工作全部丢失
 
 ### 架构决策
 
@@ -94,15 +138,14 @@ AI 对话通常是以 list 的形式存放 messages，同时只会有一个对�
 
 ### 实现代码
 
+- 坏味道由 `.githooks/` 在提交前拦（监视器锁、变化叙述注释、内联全限定名、绕过 Logger 的日志、日志 TAG 前缀）；规则、放行标记、按模块清理方式见 `.githooks/README.md`。需要提交时，无须提前阅读 Hooks，正常提交即可，有问题会被 Hooks 扫出
 - 不要使用后台任务进行编译或单测，使用同步方法
 - 禁止出现 [改两行 ui 字符串 -> 编译 -> 再改] 的行为，应该在确实需要时（比如做了重型重构后）编译
-- 实现多语言时需通过 ls 等手段确认实际的语言种类
+- 开发过程中需要实现多语言。面向用户的文本放入 res，面向 Agent 的文本可硬编码
 
 ### 单测
 
-- 允许对 UI 相关的状态机做测试，但禁止给 UI 写单测
-- 禁止给复杂度低、静态分析有足够把握判断的代码写单测
-- 重构代码后，对应的单测如果是针对遗留代码的，应该重写
+- 写或修改任何单测之前，**必须先调用 `test-triage` skill**：先判断这个测试该不该存在（拦截力），通过了再写。单测规则以该 skill 为准
 
 ### requireService<>()
 
@@ -121,20 +164,11 @@ AI 对话通常是以 list 的形式存放 messages，同时只会有一个对�
 - 在一个需求开始时，如果用户没有带着详细的计划，优先通过 `grill-me` 或 `grill-with-docs` 来快速与用户对齐认知
 - 在需要派发 subagent 的任务中，通过 `prompt-engineering` 或 `writing-for-agents` 来与它们对齐
 
-### 讲解
+### 讲解（推荐）
 
-- 需要向用户阐述复杂内容时，可以通过 `eli5` 或 `show-me` 帮助解答。eli5 是打比方，show-me 是用前端页面
+- 需要向用户阐述复杂内容时（如需要使用时序图、树状图、流程图等），可以通过 `answer-me-with-html` 帮助解答。
 
----
+### 其他
 
-## 未完成项目
-
-[] MEDIUM: 通过参考开源项目重构宿主业务
-[] HARD: 实现一个 Replay 功能，用户可以录制一段操作，作为工具保存下来，Agent 通过调用这个工具来重放用户的操作
-[] EAZY: `Build.VERSION.SDK_INT >= Build.VERSION_CODES.O` 这样的版本相关的无用判断
-[] MEDIUM: 内联包名清理，使用默认参数而放在构造函数里面的成员
-[] HARD: 处理散落的 `TODO`
-[] EAZY: Composer 附件多选：Photos 从 `PickVisualMedia` 换到 `PickMultipleVisualMedia`（同一个系统相册，不是自研 picker），Files 侧允许多选
-[] MEDIUM: 附件 Recents：在选项单里列出最近附加过的文件 / 文件夹（需要一份最近附件列表的持久化）
-[] EZAT: 添加一个 runCatching 封装到 :api 专门处理 cancellation exception 等异常，然后全仓搜索 try / runCatching 做清扫
-[] MEDIUM: githooks: 限制监视器锁使用；限制遗留类注释如“不再”，这种 API 修改 / fixes 除了实现需求的人以外，没人需要知道曾经是啥样的；不导入的内联代码；复杂的构造参数；requireService 放在构造参数或者构造参数的调用。只对 diff 生效不对全局代码
+- 单元测试: 写或修改单测前调用 `test-triage`；测试执行超过 30s 或疑似挂起时调用 `test-hang-watchdog`
+- 发版: 准备发布新版本时使用 `release-new-version`

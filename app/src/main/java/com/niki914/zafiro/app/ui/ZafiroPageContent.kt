@@ -15,9 +15,12 @@ import com.niki914.zafiro.app.ui.nav.CustomPyToolsPage
 import com.niki914.zafiro.app.ui.nav.DonePage
 import com.niki914.zafiro.app.ui.nav.ExecutionRuleDetailPage
 import com.niki914.zafiro.app.ui.nav.HomePage
+import com.niki914.zafiro.app.ui.nav.MarkdownScalePage
 import com.niki914.zafiro.app.ui.nav.McpServerDetailPage
-import com.niki914.zafiro.app.ui.nav.ProviderPickPage
+import com.niki914.zafiro.app.ui.nav.OnboardingPreferencesPage
+import com.niki914.zafiro.app.ui.nav.OnboardingThemePage
 import com.niki914.zafiro.app.ui.nav.PromptEditPage
+import com.niki914.zafiro.app.ui.nav.ProviderPickPage
 import com.niki914.zafiro.app.ui.nav.SavedConfigDetailPage
 import com.niki914.zafiro.app.ui.nav.SettingsDetailPage
 import com.niki914.zafiro.app.ui.nav.SettingsHomePage
@@ -27,7 +30,7 @@ import com.niki914.zafiro.app.ui.nav.NothingExplorerPage
 import com.niki914.zafiro.app.ui.nav.SkillDetailPage
 import com.niki914.zafiro.app.ui.nav.StartupPage
 import com.niki914.zafiro.app.ui.nav.TakeoverRuleDetailPage
-import com.niki914.zafiro.app.ui.nav.ThemeSettingsPage
+import com.niki914.zafiro.app.ui.nav.TextActionDetailPage
 import com.niki914.zafiro.app.ui.nav.ZafiroPage
 import com.niki914.zafiro.app.ui.route.BuiltinToolGroupDetailRoute
 import com.niki914.zafiro.app.ui.route.ConfigurePageRoute
@@ -35,9 +38,12 @@ import com.niki914.zafiro.app.ui.route.ConversationHistoryPageRoute
 import com.niki914.zafiro.app.ui.route.DonePageRoute
 import com.niki914.zafiro.app.ui.route.ExecutionRuleDetailRoute
 import com.niki914.zafiro.app.ui.route.HomePageRoute
+import com.niki914.zafiro.app.ui.route.MarkdownScalePageRoute
 import com.niki914.zafiro.app.ui.route.McpServerDetailRoute
-import com.niki914.zafiro.app.ui.route.ProviderPickPageRoute
+import com.niki914.zafiro.app.ui.route.OnboardingPreferencesRoute
+import com.niki914.zafiro.app.ui.route.OnboardingThemeRoute
 import com.niki914.zafiro.app.ui.route.PromptEditRoute
+import com.niki914.zafiro.app.ui.route.ProviderPickPageRoute
 import com.niki914.zafiro.app.ui.route.SavedConfigDetailRoute
 import com.niki914.zafiro.app.ui.route.SettingsDetailPageRoute
 import com.niki914.zafiro.app.ui.route.SettingsHomePageRoute
@@ -45,12 +51,13 @@ import com.niki914.zafiro.app.ui.route.SettingsProviderPickPageRoute
 import com.niki914.zafiro.app.ui.route.SkillDetailRoute
 import com.niki914.zafiro.app.ui.route.StartupPageRoute
 import com.niki914.zafiro.app.ui.route.TakeoverRuleDetailRoute
-import com.niki914.zafiro.app.ui.route.ThemeSettingsPageRoute
+import com.niki914.zafiro.app.ui.route.TextActionDetailRoute
 
 @Composable
 fun ZafiroPageContent(
     entry: NavigationEntry<ZafiroPage>,
     startupAssistantUi: StartupAssistantUi,
+    isTopPage: Boolean = true,
     onPush: (ZafiroPage) -> Unit,
     onPushFromLeft: (ZafiroPage) -> Unit,
     onPop: () -> Unit,
@@ -61,13 +68,16 @@ fun ZafiroPageContent(
     onConversationSelected: (String) -> Unit,
     onConversationSelectionConsumed: (String) -> Unit,
     activeConversationId: String?,
-    activeConversationTitle: String?,
-    onActiveConversationChanged: (String?, String?) -> Unit,
+    onActiveConversationChanged: (String?) -> Unit,
     onCurrentConversationDeleted: suspend (String) -> Unit,
 ) {
     when (val page = entry.page) {
         StartupPage -> StartupPageRoute(
             startupAssistantUi = startupAssistantUi,
+            onPush = onPush,
+        )
+
+        OnboardingThemePage -> OnboardingThemeRoute(
             onPush = onPush,
         )
 
@@ -78,8 +88,6 @@ fun ZafiroPageContent(
         SettingsProviderPickPage -> SettingsProviderPickPageRoute(
             onPush = onPush,
         )
-
-        ThemeSettingsPage -> ThemeSettingsPageRoute()
 
         is ConfigurePage -> ConfigurePageRoute(
             page = page,
@@ -93,10 +101,16 @@ fun ZafiroPageContent(
         )
 
         DonePage -> DonePageRoute(
+            onPush = onPush,
+            onResetTo = onResetTo,
+        )
+
+        OnboardingPreferencesPage -> OnboardingPreferencesRoute(
             onResetTo = onResetTo,
         )
 
         HomePage -> HomePageRoute(
+            isCurrentPage = isTopPage,
             onPush = onPush,
             onPushFromLeft = onPushFromLeft,
             selectedConversationId = selectedConversationId,
@@ -106,7 +120,6 @@ fun ZafiroPageContent(
 
         ConversationHistoryPage -> ConversationHistoryPageRoute(
             activeConversationId = activeConversationId,
-            activeConversationTitle = activeConversationTitle,
             onBack = onPopToRight,
             onConversationSelected = { id ->
                 onConversationSelected(id)
@@ -134,6 +147,11 @@ fun ZafiroPageContent(
         )
 
         is McpServerDetailPage -> McpServerDetailRoute(
+            page = page,
+            onBack = onPop,
+        )
+
+        is TextActionDetailPage -> TextActionDetailRoute(
             page = page,
             onBack = onPop,
         )
@@ -169,5 +187,7 @@ fun ZafiroPageContent(
                 onPush(CustomPyToolDetailPage(name, index, isCreating))
             },
         )
+
+        MarkdownScalePage -> MarkdownScalePageRoute()
     }
 }

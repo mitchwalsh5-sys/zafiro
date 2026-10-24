@@ -3,8 +3,11 @@ package com.niki914.zafiro.app.ui.model.home
 import com.niki914.zafiro.api.model.ApprovalDecision
 import com.niki914.zafiro.api.model.ApprovalRequest
 import com.niki914.zafiro.app.conversation.ConversationRecord
+import com.niki914.zafiro.app.conversation.ConversationSummary
 import com.niki914.zafiro.app.conversation.ForkKind
 import com.niki914.zafiro.app.conversation.ForkResult
+import com.niki914.zafiro.app.conversation.TurnBranchState
+import com.niki914.zafiro.app.ui.model.SavedConfigSummary
 import com.niki914.zafiro.chat.LlmErrorCode
 
 internal interface HomeConversationStore {
@@ -12,13 +15,26 @@ internal interface HomeConversationStore {
     suspend fun setLastOpenedConversationId(value: String)
     suspend fun loadLastConversationOnStartup(): Boolean
     suspend fun getConversation(id: String): ConversationRecord?
-    suspend fun updateDraft(conversationId: String, draftText: String)
+    suspend fun draftText(): String
+    suspend fun setDraftText(value: String)
+    suspend fun bindConfig(conversationId: String)
+    suspend fun updateConfigId(conversationId: String, configId: String)
     suspend fun deleteConversation(id: String)
+    suspend fun clearUnread(conversationId: String)
 
     // TODO(收进 Agent)：历史派生操作（reGenerate / fork / rewind）本轮留在业务侧自己组合
     //  fork（仓储）→ load（Agent）→ stream（Agent）。契约暂无 fork / delete 命令，为此不改。
     //  截断点与回填内容由仓储按回合计算，UI 侧不见底层条目与 okia 消息。
     suspend fun forkAtTurn(sourceId: String, turnIndex: Int, kind: ForkKind): ForkResult?
+
+    /** 分支组全部成员（按序号升序）；单版本会话返回空列表。 */
+    suspend fun branchGroup(conversationId: String): List<ConversationSummary>
+
+    /** 分支组内最新一版的会话 id；查不到时 null。 */
+    suspend fun latestBranchId(rootId: String): String?
+
+    /** 删除会话及其整个分支组。 */
+    suspend fun branchGroupIds(conversationId: String): List<String>
 }
 
 
@@ -52,7 +68,9 @@ data class HomeToolStatus(
 
 sealed interface HomeChatBlock {
     data class Text(val text: String) : HomeChatBlock
-    data class Thinking(val id: Int, val text: String, val isComplete: Boolean = false) : HomeChatBlock
+    data class Thinking(val id: Int, val text: String, val isComplete: Boolean = false) :
+        HomeChatBlock
+
     data class Tool(val status: HomeToolStatus) : HomeChatBlock
     data class Error(
         val message: String?,
@@ -79,6 +97,8 @@ data class HomeChatTurn(
     val images: List<HomeChatImage> = emptyList(),
     val files: List<HomeChatFile> = emptyList(),
     val blocks: List<HomeChatBlock> = emptyList(),
+    val isCompactedDivider: Boolean = false,
+    val isCompacting: Boolean = false,
 )
 
 /**
@@ -103,6 +123,7 @@ data class HomeChatFile(
     val path: String,
 ) {
     val name: String get() = path.trimEnd('/').substringAfterLast('/')
+    val category: HomeChatFileCategory get() = HomeChatFileCategory.fromPath(path)
 }
 
 data class HomeChatUiState(
@@ -118,6 +139,10 @@ data class HomeChatUiState(
     val conversationVersion: Int = 0,
     val currentConversationId: String? = null,
     val currentConversationTitle: String? = null,
+    /**
+     * 按 Turn ID 映射的局部变体分支状态。
+     */
+    val turnBranches: Map<Long, TurnBranchState> = emptyMap(),
     val expandedToolRuns: Set<String> = emptySet(),
     val expandedToolResults: Set<String> = emptySet(),
     val expandedThinking: Set<String> = emptySet(),
@@ -136,7 +161,28 @@ data class HomeChatUiState(
      * [HomeChatIntent.ResolveApproval]，结算后归 null。
      */
     val pendingApproval: ApprovalRequest? = null,
-)
+    val savedConfigs: List<SavedConfigSummary> = emptyList(),
+    val globalActiveConfigId: String = "",
+    val boundConfigId: String? = null,
+    val isConfigMenuVisible: Boolean = false,
+    /**
+     * 上下文占用进度（0f..1f），给 Composer 的环用；null = 无数据（首轮之前、
+     * 或模型未上报 usage），此时不画环。
+     */
+    val contextProgress: Float? = null,
+) {
+    val displayConfig: SavedConfigSummary?
+        get() {
+            val bound = boundConfigId?.takeIf { it.isNotBlank() }
+                ?.let { id -> savedConfigs.firstOrNull { it.id == id } }
+            if (bound != null) return bound
+            return savedConfigs.firstOrNull { it.id == globalActiveConfigId }
+                ?: savedConfigs.firstOrNull()
+        }
+
+    val activeConfigId: String?
+        get() = displayConfig?.id
+}
 
 /**
  * 会话切换时的统一瞬态清理：三组展开态 + 操作行 + active thinking 指针 + 自动展开记录全清，
@@ -152,11 +198,13 @@ fun HomeChatUiState.withClearedTransient() = copy(
     expandedActionSource = null,
     activeThinkingKey = null,
     autoExpandedThinking = emptySet(),
+    isConfigMenuVisible = false,
 )
 
 sealed interface HomeChatIntent {
     data class InputChanged(val value: String) : HomeChatIntent
     data object Send : HomeChatIntent
+    data object Warmup : HomeChatIntent
 
     /** 相册选图完成：追加一个待落盘项，实现侧完成后从 draft 读回。失败时该项消失。 */
     data class ImageAttached(val uri: String) : HomeChatIntent
@@ -179,6 +227,7 @@ sealed interface HomeChatIntent {
     data object StopGenerating : HomeChatIntent
     data object NewConversation : HomeChatIntent
     data class LoadConversation(val id: String) : HomeChatIntent
+    data class ClearUnread(val conversationId: String) : HomeChatIntent
     data class DeleteConversation(val id: String) : HomeChatIntent
     data class ToggleToolRun(val turnId: Long, val runStartIndex: Int) : HomeChatIntent
     data class ToggleToolResult(val turnId: Long, val runStartIndex: Int, val toolIndex: Int) :
@@ -187,11 +236,19 @@ sealed interface HomeChatIntent {
     data class ToggleThinking(val turnId: Long, val blockIndex: Int) : HomeChatIntent
     data class ToggleActionRow(val turnId: Long, val source: ActionSource) : HomeChatIntent
     data class ReGenerateAt(val turnId: Long) : HomeChatIntent
+
+    /** 翻页到指定 Turn 的相邻分支：-1 上一版、+1 下一版；超出范围忽略。 */
+    data class SwitchTurnBranch(val turnId: Long, val delta: Int) : HomeChatIntent
     data class ForkAt(val turnId: Long) : HomeChatIntent
     data class RewindAt(val turnId: Long) : HomeChatIntent
 
     /** 前台对话框的裁决回灌；由 [com.niki914.zafiro.api.Approver] 实现侧等待。 */
     data class ResolveApproval(val decision: ApprovalDecision) : HomeChatIntent
+
+    data object OpenConfigMenu : HomeChatIntent
+    data object DismissConfigMenu : HomeChatIntent
+    data class SelectConfig(val id: String) : HomeChatIntent
+    data object RefreshConfigs : HomeChatIntent
 }
 
 /**
@@ -200,6 +257,7 @@ sealed interface HomeChatIntent {
  */
 sealed interface HomeChatEffect {
     data class FileAttachFailed(val reason: FileAttachReason) : HomeChatEffect
+    data object EmptyInputAttempted : HomeChatEffect
 }
 
 /**

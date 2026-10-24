@@ -15,22 +15,18 @@ import com.niki914.zafiro.repo.XRepo
 import com.niki914.zafiro.service.ServiceRegistry
 import com.niki914.zafiro.service.installService
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.take
-import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import java.io.File
+import java.nio.file.Files
 
+// 保护：通用设置的加载与开关落盘；权限未授时开关不亮、不写仓。
 @OptIn(ExperimentalCoroutinesApi::class)
 class GeneralSettingsViewModelTest {
 
@@ -40,11 +36,11 @@ class GeneralSettingsViewModelTest {
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
 
-    private val tempDir = java.nio.file.Files.createTempDirectory("test_files").toFile()
+    private val tempDir = Files.createTempDirectory("test_files").toFile()
 
     private val context: Context = object : ContextWrapper(null) {
         override fun getApplicationContext(): Context = this
-        override fun getFilesDir(): java.io.File = tempDir
+        override fun getFilesDir(): File = tempDir
     }
 
     /** 权限结果由注册表里的假实现控制：ViewModel 自己经 ServiceRegistry 取 PermissionManager。 */
@@ -67,12 +63,9 @@ class GeneralSettingsViewModelTest {
 
     @Test
     fun load_populatesSettingsFromRepo() = runTest {
-        XRepo.setLanguageTag("zh-CN")
-        XRepo.setLoadLastConversationOnStartup(true)
+        XRepo.setLoadLastConversationOnStartup(false)
         XRepo.setAlwaysShowMessageActions(false)
-        XRepo.setLlmIdleTimeoutSeconds(90L)
-        XRepo.setLlmRetryMaxAttempts(5)
-        XRepo.setKeepScreenOn(false)
+        XRepo.setVoiceAssistantIsolatedSession(false)
         XRepo.setFloatingBallEnabled(true)
         XRepo.setResidentNotificationEnabled(true)
 
@@ -81,51 +74,12 @@ class GeneralSettingsViewModelTest {
         advanceUntilIdle()
 
         val state = viewModel.uiStateFlow.value
-        assertEquals("zh-CN", state.languageTag)
-        assertTrue(state.loadLastConversation)
+        assertFalse(state.loadLastConversation)
         assertFalse(state.alwaysShowMessageActions)
-        assertEquals(90L, state.idleTimeoutSeconds)
-        assertEquals(5, state.retryMaxAttempts)
-        assertFalse(state.keepScreenOn)
+        assertFalse(state.voiceAssistantIsolatedSession)
         assertTrue(state.floatingBallEnabled)
         assertTrue(state.residentNotificationEnabled)
         assertFalse(state.isLoading)
-        assertNull(state.activeDialog)
-    }
-
-    @Test
-    fun dialogState_openAndDismissWorkAsExpected() = runTest {
-        val viewModel = GeneralSettingsViewModel()
-
-        viewModel.sendIntent(GeneralSettingsIntent.OpenDialog(GeneralSettingsDialog.Language))
-        advanceUntilIdle()
-        assertEquals(GeneralSettingsDialog.Language, viewModel.uiStateFlow.value.activeDialog)
-
-        viewModel.sendIntent(GeneralSettingsIntent.OpenDialog(GeneralSettingsDialog.IdleTimeout))
-        advanceUntilIdle()
-        assertEquals(GeneralSettingsDialog.IdleTimeout, viewModel.uiStateFlow.value.activeDialog)
-
-        viewModel.sendIntent(GeneralSettingsIntent.DismissDialog)
-        advanceUntilIdle()
-        assertNull(viewModel.uiStateFlow.value.activeDialog)
-    }
-
-    @Test
-    fun selectLanguage_updatesStateRepoAndEmitsEffect() = runTest {
-        val viewModel = GeneralSettingsViewModel()
-        val effects = collectEffects(viewModel, count = 1)
-
-        viewModel.sendIntent(GeneralSettingsIntent.OpenDialog(GeneralSettingsDialog.Language))
-        viewModel.sendIntent(GeneralSettingsIntent.SelectLanguage("en"))
-        advanceUntilIdle()
-
-        assertEquals("en", viewModel.uiStateFlow.value.languageTag)
-        assertNull(viewModel.uiStateFlow.value.activeDialog)
-        assertEquals("en", XRepo.languageTag())
-        assertEquals(
-            listOf(GeneralSettingsEffect.ApplyApplicationLocales("en")),
-            effects,
-        )
     }
 
     @Test
@@ -153,13 +107,11 @@ class GeneralSettingsViewModelTest {
     fun toggleFloatingBall_whenPermissionMissing_staysOffAndEmitsNoEffect() = runTest {
         installPermission(PermissionState.DENIED_BY_USER)
         val viewModel = GeneralSettingsViewModel()
-        val effects = collectEffects(viewModel, count = 1)
 
         viewModel.sendIntent(GeneralSettingsIntent.ToggleFloatingBall(true))
         advanceUntilIdle()
 
-        // 申请在 ViewModel 内完成，UI 层不再参与，所以既没有 effect，也不会亮开关
-        assertTrue(effects.isEmpty())
+        // 申请在 ViewModel 内完成，UI 层不参与；没授上则开关不亮、不落盘
         assertFalse(viewModel.uiStateFlow.value.floatingBallEnabled)
         assertFalse(XRepo.floatingBallEnabled())
     }
@@ -189,40 +141,59 @@ class GeneralSettingsViewModelTest {
     fun toggleResidentNotification_whenPermissionMissing_staysOffAndEmitsNoEffect() = runTest {
         installPermission(PermissionState.DENIED_BY_USER)
         val viewModel = GeneralSettingsViewModel()
-        val effects = collectEffects(viewModel, count = 1)
 
         viewModel.sendIntent(GeneralSettingsIntent.ToggleResidentNotification(true))
         advanceUntilIdle()
 
-        assertTrue(effects.isEmpty())
         assertFalse(viewModel.uiStateFlow.value.residentNotificationEnabled)
         assertFalse(XRepo.residentNotificationEnabled())
     }
 
     @Test
-    fun selectTimeoutsAndAttempts_updatesStateAndRepo() = runTest {
+    fun toggleTurnNotification_whenPermissionGranted_updatesStateAndRepo() = runTest {
+        installPermission(PermissionState.GRANTED)
         val viewModel = GeneralSettingsViewModel()
 
-        viewModel.sendIntent(GeneralSettingsIntent.SelectIdleTimeout(120L))
-        advanceUntilIdle()
-        assertEquals(120L, viewModel.uiStateFlow.value.idleTimeoutSeconds)
-        assertEquals(120L, XRepo.llmIdleTimeoutSeconds())
+        assertFalse(viewModel.uiStateFlow.value.turnNotificationEnabled)
+        assertFalse(XRepo.turnNotificationEnabled())
 
-        viewModel.sendIntent(GeneralSettingsIntent.SelectRetryMaxAttempts(2))
+        viewModel.sendIntent(GeneralSettingsIntent.ToggleTurnNotification(true))
         advanceUntilIdle()
-        assertEquals(2, viewModel.uiStateFlow.value.retryMaxAttempts)
-        assertEquals(2, XRepo.llmRetryMaxAttempts())
+
+        assertTrue(viewModel.uiStateFlow.value.turnNotificationEnabled)
+        assertTrue(XRepo.turnNotificationEnabled())
+
+        viewModel.sendIntent(GeneralSettingsIntent.ToggleTurnNotification(false))
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiStateFlow.value.turnNotificationEnabled)
+        assertFalse(XRepo.turnNotificationEnabled())
     }
 
-    private fun TestScope.collectEffects(
-        viewModel: GeneralSettingsViewModel,
-        count: Int,
-    ): MutableList<GeneralSettingsEffect> {
-        val effects = mutableListOf<GeneralSettingsEffect>()
-        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
-            viewModel.uiEffect.take(count).toList(effects)
-        }
-        return effects
+    @Test
+    fun toggleTurnNotification_whenPermissionMissing_staysOff() = runTest {
+        installPermission(PermissionState.DENIED_BY_USER)
+        val viewModel = GeneralSettingsViewModel()
+
+        viewModel.sendIntent(GeneralSettingsIntent.ToggleTurnNotification(true))
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiStateFlow.value.turnNotificationEnabled)
+        assertFalse(XRepo.turnNotificationEnabled())
+    }
+
+    @Test
+    fun toggleVoiceAssistantIsolatedSession_updatesStateAndRepo() = runTest {
+        val viewModel = GeneralSettingsViewModel()
+
+        assertTrue(viewModel.uiStateFlow.value.voiceAssistantIsolatedSession)
+        assertTrue(XRepo.voiceAssistantIsolatedSession())
+
+        viewModel.sendIntent(GeneralSettingsIntent.ToggleVoiceAssistantIsolatedSession(false))
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiStateFlow.value.voiceAssistantIsolatedSession)
+        assertFalse(XRepo.voiceAssistantIsolatedSession())
     }
 
     private class FakePermissionManager(

@@ -48,10 +48,10 @@ class McpExecutor(
     override suspend fun execute(call: ToolCallContext): ToolCallOutcome {
         return try {
             val serverName = (call.descriptor.kind as? ToolKind.Mcp)?.serverName
-                ?: return ToolCallOutcome.Failure("not an MCP tool: ${call.name}")
+                ?: return ToolCallOutcome.Failure("not an MCP tool: ${call.name}", content = "not an MCP tool: ${call.name}")
             val toolName = call.descriptor.name // 原始 MCP 工具名，直接调用
             val server = servers(serverName)
-                ?: return ToolCallOutcome.Failure("MCP server not found: $serverName")
+                ?: return ToolCallOutcome.Failure("MCP server not found: $serverName", content = "MCP server not found: $serverName")
             val result = client.callTool(server, toolName, call.argumentsJson)
             val textContent = StringBuilder()
             val images = mutableListOf<ContentBlock.Image>()
@@ -62,6 +62,7 @@ class McpExecutor(
                         if (textContent.isNotEmpty()) textContent.append("\n")
                         textContent.append(block.text)
                     }
+
                     is McpContentBlock.Image -> {
                         val saver = imageSaver
                         if (saver == null) {
@@ -93,10 +94,12 @@ class McpExecutor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: McpProtocolException) {
-            ToolCallOutcome.Failure(e.message ?: "MCP tool call failed")
+            val errorMsg = e.message ?: "MCP tool call failed"
+            ToolCallOutcome.Failure(message = errorMsg, content = errorMsg)
         } catch (e: Exception) {
             // 兜底：client 实现违反契约抛非协议异常也转 outcome（永不抛异常）
-            ToolCallOutcome.Failure("MCP tool call failed: ${e.message}")
+            val errorMsg = "MCP tool call failed: ${e.message}"
+            ToolCallOutcome.Failure(message = errorMsg, content = errorMsg)
         }
     }
 

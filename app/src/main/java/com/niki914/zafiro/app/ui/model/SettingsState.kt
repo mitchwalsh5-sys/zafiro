@@ -67,20 +67,24 @@ private fun settingsSections(): List<SettingsSectionDefinition> {
             groups = listOf(
                 ZafiroSettingsGroup.ModelConfig,
                 ZafiroSettingsGroup.Memory,
+                ZafiroSettingsGroup.RuntimeControl,
             ),
         ),
         SettingsSectionDefinition(
             titleRes = R.string.ui_settings_section_general,
             groups = listOf(
+                ZafiroSettingsGroup.Theme,
                 ZafiroSettingsGroup.GeneralSettings,
             ),
         ),
         SettingsSectionDefinition(
-            titleRes = R.string.ui_settings_section_tools,
+            titleRes = R.string.ui_settings_section_ability,
             groups = listOf(
-                ZafiroSettingsGroup.BuiltinTools,
+                ZafiroSettingsGroup.Tools,
                 ZafiroSettingsGroup.Skills,
+                ZafiroSettingsGroup.Actions,
                 ZafiroSettingsGroup.Mcp,
+                ZafiroSettingsGroup.McpService,
             ),
         ),
         SettingsSectionDefinition(

@@ -1,11 +1,11 @@
 package com.niki914.zafiro.chat.agentic.buildin.impl
 
+import com.niki914.zafiro.chat.agentic.ToolExecutionPreflight
 import com.niki914.zafiro.chat.agentic.buildin.BuiltinToolRequest
 import com.niki914.zafiro.chat.agentic.buildin.TextResultBuiltinTool
 import com.niki914.zafiro.chat.agentic.buildin.TextToolResult
 import com.niki914.zafiro.chat.agentic.python.PyExecOutput
 import com.niki914.zafiro.chat.agentic.python.PyRuntime
-import com.niki914.zafiro.chat.agentic.shell.ShellCommandSafetyPolicy
 import com.niki914.zafiro.util.ToolOutputTruncator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -14,6 +14,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import java.io.File
 
 class ExecutePythonBuiltin(
     /**
@@ -24,9 +25,9 @@ class ExecutePythonBuiltin(
      * @param timeoutMs Max wait in milliseconds.
      */
     var executor: suspend (code: String, timeoutMs: Long) -> PyExecOutput = PyRuntime::exec,
-    private val safetyPolicy: ShellCommandSafetyPolicy = ShellCommandSafetyPolicy(),
+    private val preflight: ToolExecutionPreflight = ToolExecutionPreflight(),
     /** 截断导出目录（filesDir/tool_output），测试可注入临时目录。 */
-    var exportDir: java.io.File? = ToolOutputTruncator.defaultExportDir(),
+    var exportDir: File? = ToolOutputTruncator.defaultExportDir(),
 ) : TextResultBuiltinTool() {
 
     override val name: String = "execute_python"
@@ -41,7 +42,7 @@ changes, open handles, or background tasks. Persist intentionally through files 
 
 Limits: timeout 30 s default, 120 s max. Output over 2000 lines / 50 KB is
 truncated; the full output is saved to a file whose absolute path is included
-in the result — read it back with terminal commands (e.g. cat) when needed.
+in the result — read it back with shell commands (e.g. cat) when needed.
     """.trimIndent()
 
     override val defaultEnabled: Boolean = true
@@ -65,18 +66,19 @@ in the result — read it back with terminal commands (e.g. cat) when needed.
     }
 
     private suspend fun execute(code: String, timeoutMs: Long): TextToolResult {
-        val decision = safetyPolicy.evaluate(code, toolName = name)
+        val decision = preflight.evaluate(code, toolName = name)
         if (!decision.allowed) {
             return TextToolResult.failure(
                 code = "COMMAND_BLOCKED",
                 message = buildString {
-                    append(decision.reason.ifBlank { "Code blocked by safety policy." })
+                    append(decision.reason.ifBlank { "Code blocked by execution rule." })
                     decision.matchedRuleId?.let { append("\nmatched_rule_id: $it") }
                     decision.matchedRuleName?.let { append("\nmatched_rule_name: $it") }
                     decision.matchedPattern?.let { append("\nmatched_pattern: $it") }
                 },
             )
         }
+        preflight.ensurePathAccess(code)
         return try {
             val result = executor(code, timeoutMs)
             TextToolResult.success(filter(result))
@@ -88,7 +90,10 @@ in the result — read it back with terminal commands (e.g. cat) when needed.
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
-            TextToolResult.failure(code = "PYTHON_ERROR", message = t.message ?: "Python execution failed.")
+            TextToolResult.failure(
+                code = "PYTHON_ERROR",
+                message = t.message ?: "Python execution failed."
+            )
         }
     }
 

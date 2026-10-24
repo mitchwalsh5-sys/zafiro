@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.util.Base64
 import com.hashsequence.coilresvg.SvgRenderer
 import kotlinx.coroutines.Dispatchers
@@ -13,6 +14,7 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.security.MessageDigest
 
 /**
@@ -50,12 +52,14 @@ internal class ImageCodec(private val context: Context) {
     suspend fun ingestUri(uri: Uri): IngestResult = withContext(Dispatchers.IO) {
         try {
             val resolver = context.contentResolver
-            val mimeHint = resolver.getType(uri)?.let { ImageFormat.normalizeMime(it) } ?: "image/jpeg"
+            val mimeHint =
+                resolver.getType(uri)?.let { ImageFormat.normalizeMime(it) } ?: "image/jpeg"
             val read = readBytesFromUri(uri)
             val bytes = when {
                 read.tooLarge -> return@withContext IngestResult.Err(
                     IngestError.TooLarge(ImageFormat.MAX_IMAGE_BYTES)
                 )
+
                 read.bytes == null -> return@withContext IngestResult.Err(IngestError.FileNotFound)
                 else -> read.bytes
             }
@@ -68,7 +72,9 @@ internal class ImageCodec(private val context: Context) {
 
     suspend fun ingestBase64(raw: String): IngestResult = withContext(Dispatchers.IO) {
         val encoded = ImageFormat.stripDataUrlPrefix(raw)
-        val mimeHint = ImageFormat.extractMimeFromDataUrl(raw)?.let { ImageFormat.normalizeMime(it) } ?: "image/jpeg"
+        val mimeHint =
+            ImageFormat.extractMimeFromDataUrl(raw)?.let { ImageFormat.normalizeMime(it) }
+                ?: "image/jpeg"
         val bytes = try {
             Base64.decode(encoded, Base64.DEFAULT)
         } catch (e: Exception) {
@@ -80,7 +86,7 @@ internal class ImageCodec(private val context: Context) {
 
     // ── 核心管线 ─────────────────────────────────────────────────────────
 
-    private fun ingestBytes(bytes: ByteArray, mimeHint: String): IngestResult {
+    fun ingestBytes(bytes: ByteArray, mimeHint: String): IngestResult {
         if (bytes.size > ImageFormat.MAX_IMAGE_BYTES) {
             return IngestResult.Err(IngestError.TooLarge(bytes.size))
         }
@@ -97,7 +103,9 @@ internal class ImageCodec(private val context: Context) {
         val srcHeight = bounds.outHeight
         if (srcWidth <= 0 || srcHeight <= 0) return IngestResult.Err(IngestError.DecodeFailed(null))
 
-        val mime = bounds.outMimeType?.takeIf { it.isNotBlank() }?.let { ImageFormat.normalizeMime(it) } ?: mimeHint
+        val mime =
+            bounds.outMimeType?.takeIf { it.isNotBlank() }?.let { ImageFormat.normalizeMime(it) }
+                ?: mimeHint
 
         // 2. 计算目标尺寸 + 降采样
         val (targetW, targetH) = ImageFormat.targetSize(srcWidth, srcHeight)
@@ -124,16 +132,23 @@ internal class ImageCodec(private val context: Context) {
 
             // 5. JPEG q80 编码（alpha 拍白底：JPEG 无透明通道，直接压缩会按黑底合成）
             if (work.hasAlpha()) {
-                val flattened = Bitmap.createBitmap(work.width, work.height, Bitmap.Config.ARGB_8888).also { out ->
-                    Canvas(out).apply {
-                        drawColor(Color.WHITE)
-                        drawBitmap(work, 0f, 0f, null)
-                    }
-                }
+                val flattened =
+                    Bitmap.createBitmap(work.width, work.height, Bitmap.Config.ARGB_8888)
+                        .also { out ->
+                            Canvas(out).apply {
+                                drawColor(Color.WHITE)
+                                drawBitmap(work, 0f, 0f, null)
+                            }
+                        }
                 work.recycle()
                 work = flattened
             }
-            val outBytes = ByteArrayOutputStream(minOf(work.width * work.height / 4, 2 * 1024 * 1024).coerceAtLeast(32 * 1024)).use { bos ->
+            val outBytes = ByteArrayOutputStream(
+                minOf(
+                    work.width * work.height / 4,
+                    2 * 1024 * 1024
+                ).coerceAtLeast(32 * 1024)
+            ).use { bos ->
                 work.compress(Bitmap.CompressFormat.JPEG, 80, bos)
                 bos.toByteArray()
             }
@@ -240,7 +255,7 @@ internal class ImageCodec(private val context: Context) {
         }
         // 尝试 2：文件描述符（部分 ROM 只支持）
         resolver.openFileDescriptor(uri, "r")?.use { pfd ->
-            android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
+            ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
                 val read = input.readBytesLimited()
                 if (read.tooLarge) return UriReadResult(null, tooLarge = true)
                 if (read.hasContent()) return read
@@ -250,7 +265,7 @@ internal class ImageCodec(private val context: Context) {
     }
 
     /** 读满流；超 12MB → (null, tooLarge=true)；读失败 → (null, false)。 */
-    private fun java.io.InputStream.readBytesLimited(): UriReadResult {
+    private fun InputStream.readBytesLimited(): UriReadResult {
         return try {
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(8192)

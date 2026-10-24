@@ -42,13 +42,19 @@ class PythonWorkerService : Service() {
         super.onCreate()
         pythonHandler.post {
             try {
-                Python.start(AndroidPlatform(applicationContext))
+                if (!Python.isStarted()) {
+                    Python.start(AndroidPlatform(applicationContext))
+                }
                 // runtime.py 从这里拿传输文件目录（cacheDir/py_output）；
                 // 不设则缺省 /tmp，Android 上不可写 → 写盘降级全量走 inline
                 Python.getInstance()
                     .getModule("os")
                     .get("environ")!!
-                    .callAttr("__setitem__", "ZAFIRO_CACHE_DIR", applicationContext.cacheDir.absolutePath)
+                    .callAttr(
+                        "__setitem__",
+                        "ZAFIRO_CACHE_DIR",
+                        applicationContext.cacheDir.absolutePath
+                    )
             } catch (t: Throwable) {
                 initFailure = t
             } finally {

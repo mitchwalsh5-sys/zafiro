@@ -6,9 +6,9 @@ import com.niki914.okia.message.AssistantMessage
 import com.niki914.okia.message.ContentBlock
 import com.niki914.okia.message.StopReason
 import com.niki914.okia.message.ToolCallOutcome
-import com.niki914.zafiro.chat.RetryableErrorClassifier
 import com.niki914.zafiro.chat.LlmErrorCode
 import com.niki914.zafiro.chat.LlmStreamEvent
+import com.niki914.zafiro.chat.RetryableErrorClassifier
 import com.niki914.zafiro.chat.ToolCallKind
 import com.niki914.zafiro.chat.ToolCallStatus
 
@@ -19,8 +19,10 @@ import com.niki914.zafiro.chat.ToolCallStatus
  * 工具事件映射为 T2 铺路：T1 无工具注册，事件不会出现，但映射逻辑完整。
  * 错误的 Zafiro 侧 code 映射留 T4（可重试维度，LlmErrorCode 暂不扩展）。
  */
-object LlmStreamEventMapper {
-    private const val LOG_TAG = "niki914_zafiro_LlmStreamEventMapper"
+class LlmStreamEventMapper {
+    private companion object {
+        const val LOG_TAG = "niki914_zafiro_LlmStreamEventMapper"
+    }
 
     /**
      * 当前正在流式的文本块已累积文本（跨事件状态）。
@@ -109,8 +111,10 @@ object LlmStreamEventMapper {
                 accumulatedText = ""
                 resetThinkingState()
                 val classified = RetryableErrorClassifier.classify(event.error)
+                val rawMessage = event.error.message.trim().ifEmpty { null }
+                    ?: event.error.statusCode?.let { "HTTP $it" }
                 LlmStreamEvent.Error(
-                    message = event.error.message.trim().ifEmpty { null },
+                    message = rawMessage,
                     throwable = event.error.cause,
                     code = classified,
                     attempts = if (classified == LlmErrorCode.RetryExhausted) {
@@ -176,12 +180,14 @@ object LlmStreamEventMapper {
             // 让成功尝试的全量重放与 UI 累积重新对齐（避免重复/缺段）。
             is TurnEvent.RetryScheduled -> {
                 accumulatedText = ""
+                if (event.discardPartial) clearActiveThinking()
                 retryAttemptsScheduled = event.attempt
                 LlmStreamEvent.Retrying(
                     attempt = event.attempt,
                     maxAttempts = event.maxAttempts,
                     delayMs = event.delayMs,
                     reason = event.reason,
+                    discardPartial = event.discardPartial,
                 )
             }
 
@@ -250,7 +256,12 @@ object LlmStreamEventMapper {
         val call = toolCall.toStatus()
         val outcome = this.outcome
         return when (outcome) {
-            is ToolCallOutcome.Success -> LlmStreamEvent.ToolSucceeded(call, outcome.content, outcome.images)
+            is ToolCallOutcome.Success -> LlmStreamEvent.ToolSucceeded(
+                call,
+                outcome.content,
+                outcome.images
+            )
+
             is ToolCallOutcome.Intercepted ->
                 if (outcome.isError) LlmStreamEvent.ToolFailed(
                     call,

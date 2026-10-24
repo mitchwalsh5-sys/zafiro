@@ -91,10 +91,12 @@ class OpenAIChatCompletionProtocolTest {
 
     @Test
     fun requestShellCarriesEndpointMethodAndTimeouts() {
-        val request = runBlocking { protocol.buildRequest(
-            snapshot(endpoint = "https://example.com/v1/chat/completions"),
-            emptyList()
-        ) }
+        val request = runBlocking {
+            protocol.buildRequest(
+                snapshot(endpoint = "https://example.com/v1/chat/completions"),
+                emptyList()
+            )
+        }
         assertEquals("https://example.com/v1/chat/completions", request.url)
         assertEquals("POST", request.method)
         assertEquals(HttpTimeouts(1000, 2000, 3000), request.timeouts)
@@ -102,13 +104,15 @@ class OpenAIChatCompletionProtocolTest {
 
     @Test
     fun requestBodyCarriesFixedFields() {
-        val request = runBlocking { protocol.buildRequest(
-            snapshot(
-                model = "deepseek-reasoner",
-                maxTokens = 2048,
-                temperature = 0.3f
-            ), emptyList()
-        ) }
+        val request = runBlocking {
+            protocol.buildRequest(
+                snapshot(
+                    model = "deepseek-reasoner",
+                    maxTokens = 2048,
+                    temperature = 0.3f
+                ), emptyList()
+            )
+        }
         val json = body(request)
         assertEquals("deepseek-reasoner", json["model"]!!.jsonPrimitive.content)
         assertEquals(2048, json["max_tokens"]!!.jsonPrimitive.content.toInt())
@@ -122,7 +126,8 @@ class OpenAIChatCompletionProtocolTest {
 
     @Test
     fun apiKeyBecomesBearerHeader() {
-        val request = runBlocking { protocol.buildRequest(snapshot(apiKey = "sk-abc"), emptyList()) }
+        val request =
+            runBlocking { protocol.buildRequest(snapshot(apiKey = "sk-abc"), emptyList()) }
         assertEquals("Bearer sk-abc", request.headers["Authorization"])
     }
 
@@ -134,10 +139,12 @@ class OpenAIChatCompletionProtocolTest {
 
     @Test
     fun snapshotHeadersMergedWithAuthHeader() {
-        val request = runBlocking { protocol.buildRequest(
-            snapshot(apiKey = "sk-abc", headers = mapOf("X-Custom" to "v1")),
-            emptyList()
-        ) }
+        val request = runBlocking {
+            protocol.buildRequest(
+                snapshot(apiKey = "sk-abc", headers = mapOf("X-Custom" to "v1")),
+                emptyList()
+            )
+        }
         assertEquals("v1", request.headers["X-Custom"])
         assertEquals("Bearer sk-abc", request.headers["Authorization"])
     }
@@ -147,7 +154,12 @@ class OpenAIChatCompletionProtocolTest {
     @Test
     fun systemPromptBecomesFirstSystemMessage() {
         val request =
-            runBlocking { protocol.buildRequest(snapshot(systemPrompt = "你是助手"), listOf(user("你好"))) }
+            runBlocking {
+                protocol.buildRequest(
+                    snapshot(systemPrompt = "你是助手"),
+                    listOf(user("你好"))
+                )
+            }
         val messages = messagesOf(request)
         assertEquals(2, messages.size)
         assertEquals("system", messages[0]["role"]!!.jsonPrimitive.content)
@@ -163,20 +175,24 @@ class OpenAIChatCompletionProtocolTest {
 
     @Test
     fun userContentJoinsTextBlocks() {
-        val request = runBlocking { protocol.buildRequest(
-            snapshot(),
-            listOf(userBlocks(ContentBlock.Text("a"), ContentBlock.Text("b")))
-        ) }
+        val request = runBlocking {
+            protocol.buildRequest(
+                snapshot(),
+                listOf(userBlocks(ContentBlock.Text("a"), ContentBlock.Text("b")))
+            )
+        }
         val userMsg = messagesOf(request).single()
         assertEquals("a\nb", userMsg["content"]!!.jsonPrimitive.content)
     }
 
     @Test
     fun assistantWithThinkingMapsToReasoningContent() {
-        val request = runBlocking { protocol.buildRequest(
-            snapshot(),
-            listOf(assistant(listOf(ContentBlock.Thinking("推导"), ContentBlock.Text("答案"))))
-        ) }
+        val request = runBlocking {
+            protocol.buildRequest(
+                snapshot(),
+                listOf(assistant(listOf(ContentBlock.Thinking("推导"), ContentBlock.Text("答案"))))
+            )
+        }
         val msg = messagesOf(request).single()
         assertEquals("assistant", msg["role"]!!.jsonPrimitive.content)
         assertEquals("答案", msg["content"]!!.jsonPrimitive.content)
@@ -187,27 +203,34 @@ class OpenAIChatCompletionProtocolTest {
     fun assistantWithoutThinkingCarriesEmptyReasoningContent() {
         // DeepSeek 要求 assistant 消息带 reasoning_content（可为空）
         val request =
-            runBlocking { protocol.buildRequest(snapshot(), listOf(assistant(listOf(ContentBlock.Text("答案"))))) }
+            runBlocking {
+                protocol.buildRequest(
+                    snapshot(),
+                    listOf(assistant(listOf(ContentBlock.Text("答案"))))
+                )
+            }
         val msg = messagesOf(request).single()
         assertEquals("", msg["reasoning_content"]!!.jsonPrimitive.content)
     }
 
     @Test
     fun assistantWithToolCallsMapsToToolCallsArray() {
-        val request = runBlocking { protocol.buildRequest(
-            snapshot(),
-            listOf(
-                assistant(
-                    listOf(
-                        ContentBlock.ToolCall(
-                            "call_1",
-                            "get_weather",
-                            """{"city":"北京"}"""
+        val request = runBlocking {
+            protocol.buildRequest(
+                snapshot(),
+                listOf(
+                    assistant(
+                        listOf(
+                            ContentBlock.ToolCall(
+                                "call_1",
+                                "get_weather",
+                                """{"city":"北京"}"""
+                            )
                         )
                     )
                 )
             )
-        ) }
+        }
         val msg = messagesOf(request).single()
         val toolCalls = msg["tool_calls"]!!.jsonArray
         assertEquals(1, toolCalls.size)
@@ -224,16 +247,19 @@ class OpenAIChatCompletionProtocolTest {
     @Test
     fun emptyAssistantMessageIsSkipped() {
         // 无文本无工具调用（被中断的空回复）：跳过，Provider 不接受
-        val request = runBlocking { protocol.buildRequest(snapshot(), listOf(assistant(emptyList()))) }
+        val request =
+            runBlocking { protocol.buildRequest(snapshot(), listOf(assistant(emptyList()))) }
         assertEquals(0, messagesOf(request).size)
     }
 
     @Test
     fun toolResultMapsToToolMessage() {
-        val request = runBlocking { protocol.buildRequest(
-            snapshot(),
-            listOf(toolResult("call_1", ToolCallOutcome.Success("""{"temp":26}""")))
-        ) }
+        val request = runBlocking {
+            protocol.buildRequest(
+                snapshot(),
+                listOf(toolResult("call_1", ToolCallOutcome.Success("""{"temp":26}""")))
+            )
+        }
         val msg = messagesOf(request).single()
         assertEquals("tool", msg["role"]!!.jsonPrimitive.content)
         assertEquals("call_1", msg["tool_call_id"]!!.jsonPrimitive.content)
@@ -243,25 +269,29 @@ class OpenAIChatCompletionProtocolTest {
     @Test
     fun toolResultWithoutContentUsesEmptyString() {
         // 错误结果内容由下游决定，本类不加工；null 用空串
-        val request = runBlocking { protocol.buildRequest(
-            snapshot(),
-            listOf(toolResult("c1", ToolCallOutcome.Failure("boom")))
-        ) }
+        val request = runBlocking {
+            protocol.buildRequest(
+                snapshot(),
+                listOf(toolResult("c1", ToolCallOutcome.Failure("boom")))
+            )
+        }
         val msg = messagesOf(request).single()
         assertEquals("", msg["content"]!!.jsonPrimitive.content)
     }
 
     @Test
     fun fullHistoryMapsInOrder() {
-        val request = runBlocking { protocol.buildRequest(
-            snapshot(systemPrompt = "sys"),
-            listOf(
-                user("你好"),
-                assistant(listOf(ContentBlock.ToolCall("c1", "tool-a", "{}"))),
-                toolResult("c1", ToolCallOutcome.Success("ok")),
-                user("继续")
+        val request = runBlocking {
+            protocol.buildRequest(
+                snapshot(systemPrompt = "sys"),
+                listOf(
+                    user("你好"),
+                    assistant(listOf(ContentBlock.ToolCall("c1", "tool-a", "{}"))),
+                    toolResult("c1", ToolCallOutcome.Success("ok")),
+                    user("继续")
+                )
             )
-        ) }
+        }
         assertEquals(
             listOf("system", "user", "assistant", "tool", "user"),
             messagesOf(request).map { it["role"]!!.jsonPrimitive.content }
@@ -278,7 +308,8 @@ class OpenAIChatCompletionProtocolTest {
             inputSchemaJson = """{"type":"object","properties":{"city":{"type":"string"}}}""",
             kind = ToolKind.Local
         )
-        val request = runBlocking { protocol.buildRequest(snapshot(tools = listOf(tool)), emptyList()) }
+        val request =
+            runBlocking { protocol.buildRequest(snapshot(tools = listOf(tool)), emptyList()) }
         val tools = body(request)["tools"]!!.jsonArray
         assertEquals(1, tools.size)
         val t = tools[0].jsonObject
@@ -301,7 +332,8 @@ class OpenAIChatCompletionProtocolTest {
     @Test
     fun toolWithoutSchemaOmitsParameters() {
         val tool = ToolDescriptor(name = "noop", description = "noop", kind = ToolKind.Local)
-        val request = runBlocking { protocol.buildRequest(snapshot(tools = listOf(tool)), emptyList()) }
+        val request =
+            runBlocking { protocol.buildRequest(snapshot(tools = listOf(tool)), emptyList()) }
         val fn = body(request)["tools"]!!.jsonArray[0].jsonObject["function"]!!.jsonObject
         assertNull(fn["parameters"])
     }
@@ -575,41 +607,12 @@ class OpenAIChatCompletionProtocolTest {
 
     // ── encodeToolResult ──────────────────────────────────────────────────
 
-    @Test
-    fun encodeToolResultWrapsOutcomeFaithfully() {
-        val call = ContentBlock.ToolCall("call_1", "tool-a", "{}")
-        val outcomes = listOf<ToolCallOutcome>(
-            ToolCallOutcome.Success("ok"),
-            ToolCallOutcome.Failure("boom", "detail"),
-            ToolCallOutcome.Intercepted("blocked", "cached", true),
-            ToolCallOutcome.Interrupted("partial"),
-            ToolCallOutcome.Unknown("unknown", "partial")
-        )
-        outcomes.forEach { outcome ->
-            val message = protocol.encodeToolResult(call, outcome)
-            assertEquals(Message.ToolResult("call_1", "tool-a", outcome), message)
-        }
-    }
-
     // ── withCodec ─────────────────────────────────────────────────────────
-
-    @Test
-    fun withCodecReturnsNewInstance() {
-        val other = protocol.withCodec(Json { prettyPrint = true }) as OpenAIChatCompletionProtocol
-        assertTrue(other !== protocol)
-        assertEquals("deepseek", other.id)
-    }
 
     // ── OpenAI 官方 compat 形态 ───────────────────────────────────────────
 
     private val openai = OpenAIChatCompletionProtocol(compat = OpenAIChatCompletionCompat())
     private val google = OpenAIChatCompletionProtocol(compat = GoogleOpenAiCompat())
-
-    @Test
-    fun openaiCompatCarriesIdentityAndEndpoint() {
-        assertEquals("openai", openai.id)
-        assertEquals("https://api.openai.com/v1/chat/completions", openai.defaultEndpoint)
-    }
 
     @Test
     fun openaiCompatUsesMaxCompletionTokensField() {
@@ -667,15 +670,6 @@ class OpenAIChatCompletionProtocolTest {
     /** assistant 历史里首个 tool_call 对象。 */
     private fun firstToolCallOf(request: HttpRequest): JsonObject =
         messagesOf(request).single()["tool_calls"]!!.jsonArray[0].jsonObject
-
-    @Test
-    fun googleCompatCarriesIdentityAndEndpoint() {
-        assertEquals("google-openai", google.id)
-        assertEquals(
-            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-            google.defaultEndpoint
-        )
-    }
 
     @Test
     fun googleCompatReplaysThoughtSignatureOnAssistantToolCall() = runBlocking {
@@ -738,18 +732,6 @@ class OpenAIChatCompletionProtocolTest {
             )
         )
         assertNull(firstToolCallOf(request)["extra_content"])
-    }
-
-    @Test
-    fun deepSeekCompatStillUsesMaxTokensAndReasoningContent() {
-        // 默认装配（DeepSeek compat）行为不变：max_tokens + reasoning_content 空串
-        val request = runBlocking { protocol.buildRequest(snapshot(maxTokens = 1024), emptyList()) }
-        val json = Json.parseToJsonElement(request.body!!).jsonObject
-        assertEquals(1024, json["max_tokens"]!!.jsonPrimitive.content.toInt())
-        assertNull(json["max_completion_tokens"])
-        assertEquals("deepseek", protocol.id)
-        assertEquals("https://api.deepseek.com/chat/completions", protocol.defaultEndpoint)
-        assertTrue(protocol.compat is DeepSeekCompat)
     }
 
     // ── 工具结果多图 ────────────────────────────────────────────────

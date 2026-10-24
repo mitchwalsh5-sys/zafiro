@@ -7,7 +7,11 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.niki914.okia.conversation.SessionSnapshot
 
-@Entity(tableName = "conversation")
+@Entity(
+    tableName = "conversation",
+    // 对话列表按分支组收敛（根 = root_id，取组内 updated_at 最新者）
+    indices = [Index(value = ["root_id"])],
+)
 data class ConversationEntity(
     @PrimaryKey
     @ColumnInfo(name = "id")
@@ -24,10 +28,35 @@ data class ConversationEntity(
     val lastMessagePreview: String,
     @ColumnInfo(name = "turn_count")
     val turnCount: Int,
+    /**
+     * // githooks:ignore legacy-comment
+     * 死字段（T3 遗留）：旧版在此按会话持久化草稿文本。
+     * 现已改用 XRepo 全局草稿（跨会话/新建会话保持不丢，冷启动自动恢复）。
+     * 此字段保留在 SQLite 表与实体中仅用于维持现有 Room Schema 校验兼容性，
+     * 业务层严禁再读写该字段。
+     */
     @ColumnInfo(name = "draft_text")
-    val draftText: String,
+    val draftText: String = "",
     @ColumnInfo(name = "leaf_id")
     val leafId: String?,
+    /** 绑定的 LLM 配置 id。空串表示未绑定（跟随全局活跃配置）。 */
+    @ColumnInfo(name = "config_id", defaultValue = "''")
+    val configId: String = "",
+    /** 后台执行完成或等待审批时的未读标记。 */
+    @ColumnInfo(name = "has_unread", defaultValue = "0")
+    val hasUnread: Boolean = false,
+    /**
+     * 重新生成分支组的根会话 id（自身为根时等于 [id]）。
+     * 对话列表按本列分组：一组只显示组内 updated_at 最新的那一行。
+     */
+    @ColumnInfo(name = "root_id", defaultValue = "''")
+    val rootId: String = "",
+    /** 分叉来源的直接父会话 id；自身为根时为 null。 */
+    @ColumnInfo(name = "parent_id")
+    val parentId: String? = null,
+    /** 分叉发生在源会话的哪一个 Turn 下标；自身为根时为 null。 */
+    @ColumnInfo(name = "fork_turn")
+    val forkTurn: Int? = null,
 )
 
 /**
@@ -71,6 +100,13 @@ data class ConversationSummary(
     val updatedAt: Long,
     val lastMessagePreview: String,
     val turnCount: Int,
+    val hasUnread: Boolean = false,
+    /** 分支组的根会话 id；自身为根时等于 [id]。 */
+    val rootId: String = id,
+    /** 分叉来源的直接父会话 id；自身为根时为 null。 */
+    val parentId: String? = null,
+    /** 分叉发生在源会话的哪一个 Turn 下标；自身为根时为 null。 */
+    val forkTurn: Int? = null,
 )
 
 /**
@@ -79,6 +115,13 @@ data class ConversationSummary(
  */
 data class ConversationRecord(
     val summary: ConversationSummary,
-    val draftText: String,
+    /**
+     * // githooks:ignore legacy-comment
+     * 死字段（T3 遗留）：草稿已改由 XRepo 全局持久化。
+     * 本字段保留默认值仅防破坏旧调用编译，始终为空串，业务层不再消费。
+     */
+    val draftText: String = "",
     val snapshot: SessionSnapshot,
+    /** 绑定的 LLM 配置 id。空串表示未绑定（跟随全局活跃配置）。 */
+    val configId: String = "",
 )

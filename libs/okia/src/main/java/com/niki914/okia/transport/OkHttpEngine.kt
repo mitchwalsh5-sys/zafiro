@@ -1,12 +1,13 @@
 package com.niki914.okia.transport
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -163,32 +164,38 @@ class OkHttpEngine(
             .proxySelector(proxySelector())
             .build()
 
-    // body 行流：分块读 UTF-8 字符 → SseLineParser 切行（行切分与分类单一来源）。
-    // 冷流：每次 collect 独立读取。取消路径：阻塞 read 不响应协程取消，故在
-    // 构建时注册 job 取消监听 → call.cancel() 打断阻塞读（socket 中断）；
-    // finally 兜底 cancel + close。每次读前 ensureActive 提前退出（无阻塞时）。
+    // The socket reader runs on IO. awaitClose cancels its socket immediately,
+    // so coroutine cancellation never waits for the blocking read timeout.
     private fun lines(call: Call, response: Response): Flow<SseLine> {
-        val chunks = flow<String> {
-            val context = currentCoroutineContext()
-            context[Job]?.invokeOnCompletion { call.cancel() }
-            val body = response.body ?: return@flow
-            val reader = body.byteStream().bufferedReader()
-            val buffer = CharArray(READ_CHUNK_SIZE)
-            while (true) {
-                context.ensureActive()
-                val n = reader.read(buffer)
-                if (n == -1) break
-                emit(String(buffer, 0, n))
+        val chunks = channelFlow<String> {
+            val readerJob = launch(Dispatchers.IO) {
+                try {
+                    val body = checkNotNull(response.body) { "Missing response body" }
+                    val reader = body.byteStream().bufferedReader()
+                    val buffer = CharArray(READ_CHUNK_SIZE)
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val n = reader.read(buffer)
+                        if (n == -1) break
+                        send(String(buffer, 0, n))
+                    }
+                    close()
+                } catch (e: Exception) {
+                    close(e)
+                } finally {
+                    response.close()
+                }
+            }
+            // Cancellation must close the socket before waiting for the blocking reader.
+            awaitClose {
+                call.cancel()
+                readerJob.cancel()
             }
         }
+
         return flow {
             try {
-                // SSE 阻塞读与行切分切到 IO 池：lines 流继承 collector 上下文
-                // （生产默认 turnScope = Dispatchers.Default），阻塞 reader.read 会
-                // 各占一个 CPU worker 等待网络（P2）；flowOn 只改执行线程，取消
-                // 清理（invokeOnCompletion / finally cancel+close / ensureActive）
-                // 不依赖线程，照常生效。
-                SseLineParser().parse(chunks.flowOn(Dispatchers.IO)).collect { emit(it) }
+                SseLineParser().parse(chunks).collect { emit(it) }
             } finally {
                 call.cancel()
                 response.close()

@@ -48,8 +48,8 @@ internal enum class McpMode {
  * 聚合、event=message 过滤）、JSON-RPC error / id 校验、tools 列表与
  * call 结果的结构化解析。
  * 实现一（legacy）与实现二（2026）共用本过程，只差握手形态与方法集合。
- * 无状态：不维护 Mcp-Session-Id；每次 discoverTools 独立握手，callTool
- * 无握手。传输失败由 HttpEngine.unary 的缺省结构（status/body 为 null，
+ * 会话与协商版本：按服务器名分别维护 mcp-session-id 与 MCP-Protocol-Version。
+ * 传输失败由 HttpEngine.unary 的缺省结构（status/body 为 null，
  * D45）表达，此处转为 McpProtocolException。
  * Design source: MCP 2025-06-18 streamable HTTP；codex rmcp-client
  * （http_client_adapter / sse 响应处理 / event 过滤）。
@@ -81,6 +81,13 @@ internal class McpWire(
         sessionMutex.withLock {
             sessions.remove(serverName)
             protocolVersions.remove(serverName)
+        }
+    }
+
+    /** 记录协商协议版本（由 2026 server/discover 探测成功后调用）。 */
+    suspend fun recordProtocolVersion(serverName: String, version: String) {
+        sessionMutex.withLock {
+            protocolVersions[serverName] = version
         }
     }
 
@@ -192,6 +199,7 @@ internal class McpWire(
                         ?: throw McpProtocolException("MCP text content block missing 'text': $block")
                     McpContentBlock.Text(text)
                 }
+
                 "image" -> {
                     val mimeType = block["mimeType"]?.let { it as? JsonPrimitive }?.contentOrNull
                         ?: throw McpProtocolException("MCP image content block missing 'mimeType': $block")
@@ -199,6 +207,7 @@ internal class McpWire(
                         ?: throw McpProtocolException("MCP image content block missing 'data': $block")
                     McpContentBlock.Image(data, mimeType)
                 }
+
                 else -> throw McpProtocolException(
                     "MCP tool result contains unsupported block type '${type ?: "unknown"}'; " +
                             "only text and image blocks are supported"
@@ -220,13 +229,27 @@ internal class McpWire(
         val (session, version) = sessionMutex.withLock {
             sessions[server.name] to protocolVersions[server.name]
         }
+        val declaredVersion = extractProtocolVersion(body)
+        val effectiveVersion = version ?: declaredVersion
         val sessionHeader = session?.let { mapOf("mcp-session-id" to it) } ?: emptyMap()
-        val versionHeader = version?.let { mapOf("MCP-Protocol-Version" to it) } ?: emptyMap()
+        val versionHeader = effectiveVersion?.let { mapOf("MCP-Protocol-Version" to it) } ?: emptyMap()
+        // SEP-2243: modern 模式下（携带版本信封的请求）需同时附带 Mcp-Method 与 Mcp-Name 头
+        val (methodHeader, nameHeader) = if (declaredVersion != null) {
+            val method = (body["method"] as? JsonPrimitive)?.contentOrNull
+            val params = body["params"] as? JsonObject
+            val name = (params?.get("name") as? JsonPrimitive)?.contentOrNull
+                ?: (params?.get("uri") as? JsonPrimitive)?.contentOrNull
+            val mHeader = method?.let { mapOf("Mcp-Method" to it) } ?: emptyMap()
+            val nHeader = name?.let { mapOf("Mcp-Name" to it) } ?: emptyMap()
+            mHeader to nHeader
+        } else {
+            emptyMap<String, String>() to emptyMap<String, String>()
+        }
         val response = engine.unary(
             HttpRequest(
                 url = url,
                 method = "POST",
-                headers = DEFAULT_HEADERS + sessionHeader + versionHeader + server.headers,
+                headers = DEFAULT_HEADERS + sessionHeader + versionHeader + methodHeader + nameHeader + server.headers,
                 body = body.toString(),
                 timeouts = timeouts
             )
@@ -389,6 +412,12 @@ internal class McpWire(
                 statusCode = status
             )
         }
+    }
+
+    private fun extractProtocolVersion(body: JsonObject): String? {
+        val params = body["params"] as? JsonObject ?: return null
+        val meta = params["_meta"] as? JsonObject ?: return null
+        return (meta["io.modelcontextprotocol/protocolVersion"] as? JsonPrimitive)?.contentOrNull
     }
 
     companion object {

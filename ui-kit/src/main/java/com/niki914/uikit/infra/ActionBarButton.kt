@@ -6,11 +6,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
@@ -21,15 +23,21 @@ import androidx.compose.ui.graphics.layer.CompositingStrategy
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.emptyBackdrop
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.Shadow
 import com.niki914.uikit.base.LocalAppDarkTheme
@@ -43,9 +51,11 @@ fun ActionBarButton(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
     enabled: Boolean = true,
-    backdrop: LayerBackdrop = rememberLayerBackdrop(),
+    backdrop: Backdrop = emptyBackdrop(),
+    onButtonBoundsChanged: ((Rect) -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
+    val resolvedBackdrop = backdrop
     val haptics = LocalHapticFeedback.current
     val animationScope = rememberCoroutineScope()
     val interactiveStyle =
@@ -58,6 +68,8 @@ fun ActionBarButton(
     }
     val density = LocalDensity.current
     val isDarkTheme = LocalAppDarkTheme.current
+    val colorScheme = MaterialTheme.colorScheme
+    val baseSurfaceColor = LiquidGlassPresets.Button.surfaceColor(isDarkTheme, colorScheme)
     val interactionSource = remember { MutableInteractionSource() }
     val buttonShape = RoundedCornerShape(56.dp)
 
@@ -65,16 +77,20 @@ fun ActionBarButton(
         modifier = modifier
             .padding(horizontal = 12.dp, vertical = 12.dp)
             .requiredSize(with(density) { 48.sp.toDp() })
+            .then(
+                if (onButtonBoundsChanged != null) {
+                    Modifier.onGloballyPositioned { coordinates ->
+                        onButtonBoundsChanged(coordinates.boundsInRoot())
+                    }
+                } else {
+                    Modifier
+                }
+            )
             .drawBackdrop(
-                backdrop = backdrop,
+                backdrop = resolvedBackdrop,
                 shape = { buttonShape },
-                highlight = { Highlight.Ambient.copy(alpha = if (isDarkTheme) 1f else 0f) },
-                shadow = {
-                    Shadow(
-                        radius = 12f.dp,
-                        color = Color.Black.copy(if (isDarkTheme) 0.08f else 0.2f)
-                    )
-                },
+                highlight = { LiquidGlassPresets.Button.highlight(isDarkTheme) },
+                shadow = { LiquidGlassPresets.Button.shadow(isDarkTheme) },
                 layerBlock = {
                     applyLiquidInteractiveTransform(
                         style = interactiveStyle,
@@ -102,18 +118,13 @@ fun ActionBarButton(
                     drawLayer(innerShadowLayer)
 
                     drawRect(
-                        (if (isDarkTheme) Color(0xFFAFAFAF) else Color.White).copy(
-                            progress.coerceIn(0.15f, 0.35f)
+                        baseSurfaceColor.copy(
+                            alpha = progress.coerceIn(0.15f, 0.35f)
                         )
                     )
                 },
                 effects = {
-                    lens(
-                        refractionHeight = 6f.dp.toPx(),
-                        refractionAmount = size.height / 2f,
-                        depthEffect = true,
-                        chromaticAberration = true
-                    )
+                    LiquidGlassPresets.Button.applyEffects(this, isDarkTheme)
                 },
             )
             .clickable(

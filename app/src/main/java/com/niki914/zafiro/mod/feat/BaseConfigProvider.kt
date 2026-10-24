@@ -1,7 +1,7 @@
 package com.niki914.zafiro.mod.feat
 
 import com.niki914.logging.Logger
-import com.niki914.xposed.api.util.xTry
+import com.niki914.zafiro.api.util.tryOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -39,11 +39,20 @@ abstract class BaseConfigProvider {
     fun getString(path: String): String =
         getElement(path)?.jsonPrimitive?.contentOrNull.orThrowException(path)
 
+    fun getStringOrDefault(path: String, default: String): String =
+        getElement(path)?.jsonPrimitive?.contentOrNull ?: default
+
     fun getBoolean(path: String): Boolean =
         getElement(path)?.jsonPrimitive?.booleanOrNull.orThrowException(path)
 
+    fun getBooleanOrDefault(path: String, default: Boolean): Boolean =
+        getElement(path)?.jsonPrimitive?.booleanOrNull ?: default
+
     fun getInt(path: String): Int =
         getElement(path)?.jsonPrimitive?.intOrNull.orThrowException(path)
+
+    fun getIntOrDefault(path: String, default: Int): Int =
+        getElement(path)?.jsonPrimitive?.intOrNull ?: default
 
     fun getList(path: String): List<JsonElement> =
         ((getElement(path) as? JsonArray)?.toList()).orThrowException(path)
@@ -52,7 +61,7 @@ abstract class BaseConfigProvider {
         (getElement(path) as? JsonObject).orThrowException(path)
 
     fun parseHookTarget(path: String): HookTarget? =
-        xTry("BaseConfigProvider.parseHookTarget:$path") {
+        tryOrNull {
             val ownerClass = getString("$path.owner_class")
             val methodName = getString("$path.method_name")
             val methodParams = getList("$path.param_types")

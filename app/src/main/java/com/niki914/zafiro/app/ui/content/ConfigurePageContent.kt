@@ -3,7 +3,6 @@ package com.niki914.zafiro.app.ui.content
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
@@ -36,6 +35,7 @@ fun ConfigurePageContent(
     onToggleApiKeyVisibility: () -> Unit,
     onProxyChange: (String) -> Unit = {},
     onMaxTokensChange: (String) -> Unit = {},
+    onContextWindowChange: (String) -> Unit = {},
     onComplete: () -> Unit,
     onConfirmEndpointMismatch: () -> Unit = {},
     onCancelEndpointMismatch: () -> Unit = {},
@@ -98,6 +98,7 @@ fun ConfigurePageContent(
             onProtocolSelected = onProtocolSelected,
             onThinkingLevelSelected = onThinkingLevelSelected,
             onMaxTokensChange = onMaxTokensChange,
+            onContextWindowChange = onContextWindowChange,
         )
     }
 

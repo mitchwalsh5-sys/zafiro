@@ -27,25 +27,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
-import com.kyant.backdrop.effects.blur
-import com.kyant.backdrop.effects.lens
-import com.kyant.backdrop.effects.vibrancy
+import com.niki914.uikit.base.LocalAppDarkTheme
+import com.niki914.uikit.infra.LiquidGlassPresets
+import com.niki914.uikit.infra.LiquidGlassStyle
 import com.niki914.uikit.infra.interaction.InteractiveHighlight
 import com.niki914.uikit.infra.interaction.LiquidInteractiveStyle
 import com.niki914.uikit.infra.interaction.applyLiquidInteractiveTransform
@@ -77,24 +75,18 @@ internal fun LiquidTextFieldContainer(
     expandedLayout: Boolean = false,
     /** 展开布局下按钮行：左 leading 右 trailing，与文本区同一玻璃容器内。 */
     expandedActionsRow: (@Composable RowScope.() -> Unit)? = null,
+    backdrop: Backdrop? = null,
+    glassStyle: LiquidGlassStyle = LiquidGlassPresets.TextField,
     leadingContent: (@Composable RowScope.() -> Unit)? = null,
     trailingContent: (@Composable RowScope.() -> Unit)? = null,
 ) {
-    val backdrop = rememberLayerBackdrop()
+    val fallbackBackdrop = rememberLayerBackdrop()
+    val resolvedBackdrop = backdrop ?: fallbackBackdrop
+    val isDarkTheme = LocalAppDarkTheme.current
     val animationScope = rememberCoroutineScope()
     var isFocused by remember { mutableStateOf(false) }
-    var boundsInRoot by remember { mutableStateOf<Rect?>(null) }
-    var trailingBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     val interactiveHighlight = remember(animationScope) {
-        InteractiveHighlight(
-            animationScope = animationScope,
-            isDragStartIgnored = { position ->
-                val trailing = trailingBoundsInRoot
-                val field = boundsInRoot
-                trailing != null && field != null &&
-                        Rect(trailing.topLeft - field.topLeft, trailing.size).contains(position)
-            },
-        )
+        InteractiveHighlight(animationScope = animationScope)
     }
     var textFieldValue by remember {
         mutableStateOf(
@@ -133,7 +125,7 @@ internal fun LiquidTextFieldContainer(
         colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
     }
     val surfaceColor = if (enabled) {
-        colorScheme.surfaceContainerHigh.copy(alpha = 0.64f)
+        glassStyle.surfaceColor(isDarkTheme, colorScheme)
     } else {
         colorScheme.surfaceContainer.copy(alpha = 0.42f)
     }
@@ -167,16 +159,13 @@ internal fun LiquidTextFieldContainer(
                     }
                 }
             }
-            .onGloballyPositioned { coordinates ->
-                boundsInRoot = coordinates.boundsInRoot()
-            }
             .drawBackdrop(
-                backdrop = backdrop,
+                backdrop = resolvedBackdrop,
                 shape = { fieldShape },
+                highlight = { glassStyle.highlight(isDarkTheme) },
+                shadow = { glassStyle.shadow(isDarkTheme) },
                 effects = {
-                    vibrancy()
-                    blur(2.dp.toPx())
-                    lens(12.dp.toPx(), 24.dp.toPx())
+                    glassStyle.applyEffects(this, isDarkTheme)
                 },
                 layerBlock = if (interactiveEffectsEnabled) {
                     {
@@ -223,7 +212,8 @@ internal fun LiquidTextFieldContainer(
                 // 展开态文本区 top padding = 按钮自身 bottom padding
                 //（ActionBarButton 内建 vertical 12dp），上下留白对称
                 Row(
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
                         .then(if (expandedLayout) Modifier.padding(top = 12.dp) else Modifier),
                     verticalAlignment = contentVerticalAlignment,
                 ) {
@@ -253,13 +243,7 @@ internal fun LiquidTextFieldContainer(
 
                     if (trailingContent != null && !expandedLayout) {
                         CompositionLocalProvider(LocalContentColor provides trailingColor) {
-                            Box(
-                                modifier = Modifier.onGloballyPositioned { coordinates ->
-                                    trailingBoundsInRoot = coordinates.boundsInRoot()
-                                },
-                            ) {
-                                trailingContent(this@Row)
-                            }
+                            trailingContent(this@Row)
                         }
                     }
                 }
@@ -276,13 +260,7 @@ internal fun LiquidTextFieldContainer(
                         }
                         if (trailingContent != null) {
                             CompositionLocalProvider(LocalContentColor provides trailingColor) {
-                                Box(
-                                    modifier = Modifier.onGloballyPositioned { coordinates ->
-                                        trailingBoundsInRoot = coordinates.boundsInRoot()
-                                    },
-                                ) {
-                                    trailingContent(this@Row)
-                                }
+                                trailingContent(this@Row)
                             }
                         }
                     }

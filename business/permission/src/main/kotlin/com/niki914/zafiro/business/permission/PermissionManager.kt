@@ -38,19 +38,21 @@ interface PermissionScope {
 }
 
 /**
- * 生产实现，零构造参数：协作者自己经注册表取，组合根只负责登记（见 AppServices）。
+ * 生产实现：协作者自己经注册表取，组合根只负责登记（见 AppServices）。
+ *
+ * [accessibilityService] 由组合根传入而不是在这里拼：无障碍服务的类名不受 applicationId
+ * 影响（debug 包名带 `.debug` 后缀，类名仍是 `com.niki914.zafiro.mod.feat.*`），
+ * 只有声明它的 app 模块知道真值，所以用 `ComponentName(context, 类引用)` 构造。
  *
  * 仅主进程可用：ApplicationService 只装在主进程组合根，宿主进程取不到即构造失败——
  * 宿主进程的 packageName 是宿主包（Breeno/XiaoAi），拿它拼 ComponentName 与 shell 命令会错包。
  */
-class PermissionManagerImpl : PermissionManager {
+class PermissionManagerImpl(
+    private val accessibilityService: ComponentName,
+) : PermissionManager {
 
     private val appService: ApplicationService = requireService()
     private val app: Context = appService.getApplication()
-    private val accessibilityService = ComponentName(
-        app.packageName,
-        "${app.packageName}.mod.feat.ZafiroAccessibilityService",
-    )
 
     private val engine = PermissionEngine(
         currentApi = Build.VERSION.SDK_INT,
@@ -68,7 +70,10 @@ class PermissionManagerImpl : PermissionManager {
     override suspend fun request(permission: Permission): PermissionResult =
         engine.request(permission, defaultChain(permission))
 
-    override suspend fun request(permission: Permission, vararg channels: Channel): PermissionResult =
+    override suspend fun request(
+        permission: Permission,
+        vararg channels: Channel
+    ): PermissionResult =
         engine.request(permission, chainOf(permission, channels.toList()))
 
     override fun applyScope(vararg channels: Channel): PermissionScope =
@@ -87,14 +92,27 @@ class PermissionManagerImpl : PermissionManager {
         internal fun defaultChain(permission: Permission): List<Channel> = when (permission) {
             Permission.OVERLAY, Permission.ACCESSIBILITY ->
                 listOf(Channel.ROOT_SHELL, Channel.SHIZUKU, Channel.JUMP_SETTINGS)
+
             Permission.NOTIFICATION ->
                 // 有 root / Shizuku 时优先静默授权（shell 执行 pm grant / appops），
                 // 不可用或命令被系统拒纳时降级到系统弹窗与跳设置页
-                listOf(Channel.ROOT_SHELL, Channel.SHIZUKU, Channel.SYSTEM_DIALOG, Channel.JUMP_SETTINGS)
+                listOf(
+                    Channel.ROOT_SHELL,
+                    Channel.SHIZUKU,
+                    Channel.SYSTEM_DIALOG,
+                    Channel.JUMP_SETTINGS
+                )
+
             Permission.STORAGE ->
                 // SYSTEM_DIALOG 只在 <30 真能用（运行时权限框）；30+ 是 special 机制，
                 // 它自己报 UNAVAILABLE，链自然降级到跳设置页
-                listOf(Channel.ROOT_SHELL, Channel.SHIZUKU, Channel.SYSTEM_DIALOG, Channel.JUMP_SETTINGS)
+                listOf(
+                    Channel.ROOT_SHELL,
+                    Channel.SHIZUKU,
+                    Channel.SYSTEM_DIALOG,
+                    Channel.JUMP_SETTINGS
+                )
+
             Permission.ROOT -> listOf(Channel.ROOT_SHELL)
             Permission.SHIZUKU -> listOf(Channel.SHIZUKU)
         }

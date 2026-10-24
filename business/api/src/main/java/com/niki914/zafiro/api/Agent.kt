@@ -1,5 +1,6 @@
 package com.niki914.zafiro.api
 
+import com.niki914.zafiro.api.model.ContextUsage
 import com.niki914.zafiro.api.model.Conversation
 import com.niki914.zafiro.api.model.ConversationId
 import com.niki914.zafiro.api.model.Draft
@@ -36,6 +37,15 @@ interface Agent : AgentControl {
      * 落盘不读本字段，理由见接口注释的边界说明。
      */
     val conversation: StateFlow<Conversation>
+
+    /**
+     * 当前上下文占用：分子取 [Conversation.contextTokens]（[conversation] 改变即刷新），
+     * 分母取生效配置声明的窗口（配置切换后随下一次装配刷新）。
+     *
+     * 无有效记账时为 null，消费方据此不画环——「暂无」与「0%」是两件事。
+     * 读者：Compose 的上下文环；将来的长对话自动压缩触发点。
+     */
+    val contextUsage: StateFlow<ContextUsage?>
 
     /**
      * 用户输入草稿：一段文本 + N 张图。多客户端共享同一份。
@@ -116,6 +126,28 @@ interface Agent : AgentControl {
      * **不动持久化记录**，删除历史会话是仓储的事。
      */
     fun discard()
+
+    /**
+     * 释放当前 Agent 实例持有的运行时资源（关闭会话、取消自身协程）。
+     *
+     * 与 [discard] 的区别：**不杀死进程级共享资源**（不调用 PyRuntime.kill() 与
+     * TerminalSessionPool.closeAll()），防止破坏其它正在后台并发运行的 Agent。
+     */
+    fun release()
+
+    /**
+     * 绑定当前会话执行所使用的 LLM 配置 ID。
+     *
+     * 传空串表示清除会话级专属绑定，由底层引擎回退读取全局激活配置。
+     */
+    fun bindConfig(configId: String)
+
+    /**
+     * 预热底层执行引擎与外部工具（如 MCP 发现）。
+     *
+     * 幂等无副作用：在用户拉起键盘或聚焦输入框时调用，提前触发后台 MCP 发现。
+     */
+    fun warmup() {}
 }
 
 /**

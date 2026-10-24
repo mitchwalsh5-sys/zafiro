@@ -7,6 +7,9 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.MediaStore
 import android.widget.Toast
+import com.niki914.zafiro.api.util.runCatchingCancellable
+import com.niki914.zafiro.api.util.tryIgnore
+import com.niki914.zafiro.api.util.tryOrNull
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -17,24 +20,26 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -44,30 +49,39 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -76,6 +90,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
@@ -86,48 +105,72 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.niki914.logging.Logger
 import com.niki914.uikit.base.BaseTheme
-import com.niki914.uikit.infra.ConfirmationLiquidDialog
+import com.niki914.uikit.base.LocalAppDarkTheme
 import com.niki914.uikit.infra.LiquidDialog
+import com.niki914.uikit.infra.LiquidMenuItem
+import com.niki914.uikit.infra.LiquidPopover
+import com.niki914.uikit.infra.LocalHasActiveDialog
+import com.niki914.uikit.infra.LocalScreenBackdrop
+import com.niki914.uikit.infra.PopoverAlignment
 import com.niki914.uikit.infra.ProvideLiquidScreenContentForPreview
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.semantics.Role
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.drawBackdrop
+import com.niki914.uikit.infra.LiquidGlassPresets
 import com.niki914.uikit.infra.ReportTitleBarCollapsed
+import com.niki914.uikit.infra.interaction.InteractiveHighlight
+import com.niki914.uikit.infra.interaction.LiquidButtonInteractiveStyle
+import com.niki914.uikit.infra.interaction.applyLiquidInteractiveTransform
 import com.niki914.uikit.infra.component.MaterialTintLiquidButton
 import com.niki914.uikit.infra.component.OptionRow
 import com.niki914.uikit.infra.component.OptionSheet
 import com.niki914.uikit.infra.liquidScreenTopPadding
 import com.niki914.uikit.infra.nav.pageViewModel
+import com.niki914.uikit.infra.scrollbar.LiquidOverscrollContainer
+import com.niki914.uikit.infra.scrollbar.LiquidOverscrollController
+import com.niki914.uikit.infra.scrollbar.rememberLiquidOverscrollController
+import com.niki914.zafiro.api.model.ApprovalDecision
+import com.niki914.zafiro.api.model.ApprovalRequest
 import com.niki914.zafiro.app.R
 import com.niki914.zafiro.app.migration.ZafiroSetupMigration
+import com.niki914.zafiro.app.conversation.TurnBranchState
+import com.niki914.zafiro.app.notification.TurnNotificationManager
 import com.niki914.zafiro.app.ui.PageChromeContribution
 import com.niki914.zafiro.app.ui.PageChromeMenuItem
 import com.niki914.zafiro.app.ui.RegisterPageChrome
+import com.niki914.zafiro.app.ui.model.ToolPresentation
 import com.niki914.zafiro.app.ui.model.home.ActionSource
+import com.niki914.zafiro.app.ui.model.home.FileAttachReason
 import com.niki914.zafiro.app.ui.model.home.HomeChatBlock
 import com.niki914.zafiro.app.ui.model.home.HomeChatEffect
 import com.niki914.zafiro.app.ui.model.home.HomeChatFile
-import com.niki914.zafiro.app.ui.model.home.FileAttachReason
 import com.niki914.zafiro.app.ui.model.home.HomeChatImage
 import com.niki914.zafiro.app.ui.model.home.HomeChatIntent
 import com.niki914.zafiro.app.ui.model.home.HomeChatTurn
 import com.niki914.zafiro.app.ui.model.home.HomeChatUiState
 import com.niki914.zafiro.app.ui.model.home.HomeChatViewModel
-import com.niki914.zafiro.app.ui.model.home.MessageActionsDisplay
 import com.niki914.zafiro.app.ui.model.home.HomeToolState
 import com.niki914.zafiro.app.ui.model.home.HomeToolStatus
-import com.niki914.zafiro.app.ui.model.ToolPresentation
-import com.niki914.zafiro.app.ui.nav.TextTitle
+import com.niki914.zafiro.app.ui.model.home.MessageActionsDisplay
 import com.niki914.zafiro.app.ui.nav.TopBarActionSpec
-import com.niki914.zafiro.api.model.ApprovalDecision
-import com.niki914.zafiro.api.model.ApprovalRequest
+import com.niki914.zafiro.business.application.ApplicationService
 import com.niki914.zafiro.repo.UpdateCheckHolder
+import com.niki914.zafiro.repo.UpdateCheckResult
 import com.niki914.zafiro.repo.XRepo
+import com.niki914.zafiro.service.findService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -149,9 +192,10 @@ private const val PHOTO_PICK_MAX_ITEMS = 10
 
 @Composable
 fun HomePageContent(
+    isCurrentPage: Boolean = true,
     selectedConversationId: String?,
     onConversationSelectionConsumed: (String) -> Unit,
-    onActiveConversationChanged: (String?, String?) -> Unit,
+    onActiveConversationChanged: (String?) -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSystemExplorer: () -> Unit,
     onOpenNothingExplorer: () -> Unit,
@@ -160,7 +204,6 @@ fun HomePageContent(
     val viewModel = pageViewModel<HomeChatViewModel>()
     val newConversationMenuLabel = stringResource(R.string.ui_home_menu_new_conversation)
     val settingsMenuLabel = stringResource(R.string.ui_settings_menu_entry)
-    val historyContentDescription = stringResource(R.string.ui_home_history_content_description)
     val latestViewModel by rememberUpdatedState(viewModel)
     val latestOnOpenHistory by rememberUpdatedState(onOpenHistory)
     val latestOnOpenSystemExplorer by rememberUpdatedState(onOpenSystemExplorer)
@@ -201,6 +244,7 @@ fun HomePageContent(
             }
         }
     }
+    val latestUiState by rememberUpdatedState(uiState)
 
     // 附件失败提示：一次性 effect（不占状态）。
     // 三条文案按原因分（D22）：解析不出路径 / 没拿到全局文件访问权 / 读不到文件。
@@ -217,10 +261,17 @@ fun HomePageContent(
                     },
                     Toast.LENGTH_SHORT,
                 ).show()
+
+                HomeChatEffect.EmptyInputAttempted -> Toast.makeText(
+                    attachToastContext,
+                    R.string.ui_toast_empty_input,
+                    Toast.LENGTH_SHORT,
+                ).show()
             }
         }
     }
     val alwaysShowActions by XRepo.alwaysShowMessageActionsSetting.collectAsState()
+    val alwaysShowDetailedToolOutput by XRepo.alwaysShowDetailedToolOutputSetting.collectAsState()
     val actionsDisplay = if (alwaysShowActions) {
         MessageActionsDisplay.Always
     } else {
@@ -230,17 +281,26 @@ fun HomePageContent(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
+    val overscrollController = rememberLiquidOverscrollController()
 
     // Home 必须显式接管顶栏折叠信号：列表位置会由程序化驱动（自动贴底），且工具结果框
-    // 自带滚动子树——两者都是壳层累积量看不见的位移。其余页面保持自动感知。
+    // 自带滚动子树——两者都是壳层累积量看不见的位移；当向上超滚时，内容推入顶栏区，顶栏需变实体遮挡。
     ReportTitleBarCollapsed {
-        listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
+        listState.firstVisibleItemIndex > 0 ||
+            listState.firstVisibleItemScrollOffset > 0 ||
+            overscrollController.overscrollOffset.value < 0f
     }
 
     val imeBottom = with(density) { WindowInsets.ime.getBottom(this).toDp() }
     val navigationBottom = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
     var isComposerFocused by remember { mutableStateOf(false) }
     val effectiveImeBottom = if (isComposerFocused) imeBottom else 0.dp
+    val isKeyboardActive = imeBottom > 0.dp || (isComposerFocused && uiState.input.isNotEmpty())
+    LaunchedEffect(isKeyboardActive) {
+        if (isKeyboardActive) {
+            viewModel.sendIntent(HomeChatIntent.Warmup)
+        }
+    }
     // 统一视觉底间距：键盘关闭时与 composer 底距一致，不随 ime 放大——键盘打开时
     // 额外空间全部由 composerBottomPadding 提供，箭头/消息的呼吸空间保持固定
     val composerGap = navigationBottom + 20.dp
@@ -302,34 +362,95 @@ fun HomePageContent(
         val id = selectedConversationId?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
         latestViewModel.sendIntent(HomeChatIntent.LoadConversation(id))
         latestOnConversationSelectionConsumed(id)
+        TurnNotificationManager.cancelNotification(id)
     }
-    LaunchedEffect(uiState.currentConversationId, uiState.currentConversationTitle) {
-        latestOnActiveConversationChanged(
-            uiState.currentConversationId,
-            uiState.currentConversationTitle,
+    LaunchedEffect(uiState.currentConversationId) {
+        latestOnActiveConversationChanged(uiState.currentConversationId)
+    }
+    DisposableEffect(isCurrentPage, uiState.currentConversationId) {
+        findService<ApplicationService>()?.setHomeChatActive(isCurrentPage)
+        TurnNotificationManager.visibleConversationId =
+            if (isCurrentPage) uiState.currentConversationId else null
+        onDispose {
+            findService<ApplicationService>()?.setHomeChatActive(false)
+            if (TurnNotificationManager.visibleConversationId == uiState.currentConversationId) {
+                TurnNotificationManager.visibleConversationId = null
+            }
+        }
+    }
+    LaunchedEffect(isCurrentPage, uiState.currentConversationId, uiState.isGenerating) {
+        if (isCurrentPage && !uiState.isGenerating) {
+            val id = uiState.currentConversationId
+            if (!id.isNullOrBlank()) {
+                latestViewModel.sendIntent(HomeChatIntent.ClearUnread(id))
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        latestViewModel.sendIntent(HomeChatIntent.RefreshConfigs)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (latestUiState.isConfigMenuVisible) {
+                latestViewModel.sendIntent(HomeChatIntent.DismissConfigMenu)
+            }
+        }
+    }
+
+    val rectSaver = remember {
+        Saver<Rect?, List<Float>>(
+            save = { rect -> rect?.let { listOf(it.left, it.top, it.right, it.bottom) } },
+            restore = { list -> Rect(list[0], list[1], list[2], list[3]) },
         )
+    }
+    var titleAnchorBounds by rememberSaveable(stateSaver = rectSaver) {
+        mutableStateOf<Rect?>(null)
+    }
+
+    val titleContent: @Composable () -> Unit = remember {
+        {
+            HomeTitleConfigChip(
+                uiStateProvider = { latestUiState },
+                onChipClick = {
+                    latestViewModel.sendIntent(HomeChatIntent.OpenConfigMenu)
+                },
+                onAnchorBoundsChanged = { bounds ->
+                    titleAnchorBounds = bounds
+                },
+            )
+        }
     }
 
     val pageChromeContribution = remember(
-        uiState.currentConversationTitle,
         newConversationMenuLabel,
         settingsMenuLabel,
-        historyContentDescription,
+        titleContent,
+        uiState.isConfigMenuVisible,
     ) {
         PageChromeContribution(
-            titleSpec = uiState.currentConversationTitle
-                ?.takeIf { it.isNotBlank() }
-                ?.let { TextTitle(it) },
+            titleContent = titleContent,
+            isTitleOccluded = uiState.isConfigMenuVisible,
+            actionsVisible = !uiState.isConfigMenuVisible,
             leftAction = TopBarActionSpec(
                 icon = Icons.Default.History,
-                onClick = { latestOnOpenHistory() },
-                contentDescription = historyContentDescription,
+                onClick = {
+                    if (latestUiState.isConfigMenuVisible) {
+                        latestViewModel.sendIntent(HomeChatIntent.DismissConfigMenu)
+                    }
+                    latestOnOpenHistory()
+                },
+                contentDescription = "History Button",
             ),
             menuItems = listOf(
                 PageChromeMenuItem(
                     key = "new_conversation",
                     title = newConversationMenuLabel,
                     onClick = {
+                        if (latestUiState.isConfigMenuVisible) {
+                            latestViewModel.sendIntent(HomeChatIntent.DismissConfigMenu)
+                        }
                         latestViewModel.sendIntent(HomeChatIntent.NewConversation)
                     },
                 ),
@@ -356,7 +477,12 @@ fun HomePageContent(
                 PageChromeMenuItem(
                     key = "settings",
                     title = settingsMenuLabel,
-                    onClick = { latestOnOpenSettings() },
+                    onClick = {
+                        if (latestUiState.isConfigMenuVisible) {
+                            latestViewModel.sendIntent(HomeChatIntent.DismissConfigMenu)
+                        }
+                        latestOnOpenSettings()
+                    },
                 ),
             ),
         )
@@ -365,16 +491,48 @@ fun HomePageContent(
 
     RegisterPageChrome(pageChromeContribution)
 
-    // 冷启动键盘焦点：仅进程内首次进入 Home、无草稿输入且不在加载中时抢焦点。
+    val configs = remember(uiState.savedConfigs, uiState.activeConfigId) {
+        val activeId = uiState.activeConfigId
+        if (activeId.isNullOrBlank()) {
+            uiState.savedConfigs
+        } else {
+            val (active, rest) = uiState.savedConfigs.partition { it.id == activeId }
+            active + rest
+        }
+    }
+
+    LiquidPopover(
+        expanded = uiState.isConfigMenuVisible,
+        onDismissRequest = {
+            viewModel.sendIntent(HomeChatIntent.DismissConfigMenu)
+        },
+        anchorBounds = titleAnchorBounds,
+        alignment = PopoverAlignment.BottomCenter,
+        scrollable = configs.size > 5,
+    ) {
+        configs.forEach { config ->
+            LiquidMenuItem(
+                title = config.name,
+                trailingText = config.modelId.takeIf { it != config.name },
+                checked = config.id == uiState.activeConfigId,
+                onClick = {
+                    viewModel.sendIntent(HomeChatIntent.SelectConfig(config.id))
+                },
+            )
+        }
+    }
+
+    val hasActiveDialog = LocalHasActiveDialog.current
+    // 冷启动键盘焦点：仅进程内首次进入 Home、无草稿输入、不在加载中且当前无弹窗时抢焦点。
     // 标志在首次 effect 执行后即置位：无论聚焦成功、attempts 耗尽还是条件不满足
     // （有草稿/正在生成），都不再重试 —— 否则回答完成时 isGenerating 翻转会重启
     // 本 effect，导致"回答完成后自动弹键盘"（冷启动时未成功聚焦过的场景）。
-    if (!composerAutoFocusDone && !uiState.isLoadingConversation) {
+    if (!composerAutoFocusDone && !uiState.isLoadingConversation && !hasActiveDialog) {
         LaunchedEffect(uiState.input.isBlank(), uiState.isGenerating) {
             if (uiState.input.isBlank() && !uiState.isGenerating) {
                 repeat(AUTO_FOCUS_MAX_ATTEMPTS) {
                     delay(AUTO_FOCUS_RETRY_INTERVAL_MILLIS)
-                    val focused = runCatching { composerFocusRequester.requestFocus() }.isSuccess
+                    val focused = runCatchingCancellable { composerFocusRequester.requestFocus() }.isSuccess
                     if (focused) {
                         keyboardController?.show()
                         composerAutoFocusDone = true
@@ -390,6 +548,7 @@ fun HomePageContent(
         uiState = uiState,
         actionsDisplay = actionsDisplay,
         listState = listState,
+        overscrollController = overscrollController,
         composerBottomPadding = composerBottomPadding,
         composerGap = composerGap,
         composerHeight = composerHeight,
@@ -401,8 +560,13 @@ fun HomePageContent(
             viewModel.sendIntent(HomeChatIntent.InputChanged(value))
         },
         onSendClick = {
-            dismissInputFocus()
-            shouldFollowBottom = true
+            val query = uiState.input.trim()
+            val hasAttachments =
+                uiState.pendingImages.isNotEmpty() || uiState.pendingFiles.isNotEmpty()
+            if (query.isNotEmpty() || hasAttachments) {
+                dismissInputFocus()
+                shouldFollowBottom = true
+            }
             viewModel.sendIntent(HomeChatIntent.Send)
         },
         onStopClick = {
@@ -457,25 +621,18 @@ fun HomePageContent(
                 HomeChatIntent.ToggleActionRow(turnId, source)
             )
         },
+        turnBranches = uiState.turnBranches,
+        onSwitchTurnBranch = { turnId, delta ->
+            viewModel.sendIntent(HomeChatIntent.SwitchTurnBranch(turnId, delta))
+        },
+        alwaysShowDetailed = alwaysShowDetailedToolOutput,
     )
 
     val updateCheckResult by UpdateCheckHolder.result.collectAsState()
-    val uriHandler = LocalUriHandler.current
-    val remoteVersion = updateCheckResult?.remoteVersion.orEmpty()
-    val releaseUrl = updateCheckResult?.releaseUrl.orEmpty()
-    ConfirmationLiquidDialog(
-        visible = updateCheckResult?.hasUpdate == true,
-        onDismissRequest = { UpdateCheckHolder.dismiss() },
-        title = stringResource(R.string.update_dialog_title),
-        text = stringResource(R.string.update_dialog_text, remoteVersion),
-        positiveButtonText = stringResource(R.string.update_dialog_confirm),
-        negativeButtonText = stringResource(R.string.update_dialog_cancel),
-        onPositiveClick = {
-            uriHandler.openUri(releaseUrl)
-            UpdateCheckHolder.dismiss()
-        },
-        onNegativeClick = { UpdateCheckHolder.dismiss() },
-        dismissOnBackgroundTap = false,
+    val dismissUpdateScope = rememberCoroutineScope()
+    UpdateAvailableDialog(
+        update = updateCheckResult,
+        onDismiss = { dismissUpdateScope.launch { UpdateCheckHolder.dismiss() } },
     )
 
     when (val request = uiState.pendingApproval) {
@@ -486,14 +643,86 @@ fun HomePageContent(
                 onDeny = { viewModel.sendIntent(HomeChatIntent.ResolveApproval(ApprovalDecision.Deny)) },
             )
         }
+
         is ApprovalRequest.ScreenControlConsent -> {
             ScreenControlConsentDialog(
                 onAgree = { viewModel.sendIntent(HomeChatIntent.ResolveApproval(ApprovalDecision.Allow)) },
                 onDeny = { viewModel.sendIntent(HomeChatIntent.ResolveApproval(ApprovalDecision.Deny)) },
             )
         }
+
         null -> {}
     }
+}
+
+/**
+ * 更新弹窗：标题 + 版本提示 + GitHub release 原文（markdown，可滚动）。
+ * 只负责展示；"同一版本只弹一次" 的记账在 [UpdateCheckHolder.dismiss]。
+ */
+@Composable
+private fun UpdateAvailableDialog(
+    update: UpdateCheckResult?,
+    onDismiss: () -> Unit,
+) {
+    val uriHandler = LocalUriHandler.current
+    LiquidDialog(
+        visible = update?.hasUpdate == true,
+        onDismissRequest = onDismiss,
+        dismissOnBackgroundTap = false,
+        title = {
+            Text(
+                text = stringResource(R.string.update_dialog_title),
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        text = {
+            Text(
+                text = stringResource(
+                    R.string.update_dialog_text,
+                    update?.remoteVersion.orEmpty(),
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        content = {
+            val notes = update?.releaseNotes.orEmpty()
+            if (notes.isNotBlank()) {
+                // 说明单独限高滚动，标题与按钮常驻
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    AssistantOutputText(notes)
+                }
+            }
+        },
+        actions = {
+            MaterialTintLiquidButton(
+                text = stringResource(R.string.update_dialog_confirm),
+                onClick = {
+                    update?.releaseUrl?.takeIf { it.isNotBlank() }
+                        ?.let(uriHandler::openUri)
+                    onDismiss()
+                },
+                modifier = Modifier.weight(1f),
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            )
+            MaterialTintLiquidButton(
+                text = stringResource(R.string.update_dialog_cancel),
+                onClick = onDismiss,
+                modifier = Modifier.weight(1f),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            )
+        },
+    )
 }
 
 /**
@@ -586,7 +815,8 @@ private fun ToolPermissionDialog(
                 Text(
                     text = stringResource(
                         R.string.tool_permission_matched_rule,
-                        request.ruleName
+                        request.ruleName,
+                        request.matchedPattern,
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
@@ -618,6 +848,7 @@ private fun HomePageContentBody(
     uiState: HomeChatUiState,
     actionsDisplay: MessageActionsDisplay,
     listState: LazyListState,
+    overscrollController: LiquidOverscrollController = rememberLiquidOverscrollController(),
     composerBottomPadding: Dp,
     composerGap: Dp,
     composerHeight: MutableState<Dp>,
@@ -649,6 +880,9 @@ private fun HomePageContentBody(
     expandedActionSource: ActionSource?,
     activeThinkingKey: String? = null,
     onToggleActionRow: (Long, ActionSource) -> Unit,
+    turnBranches: Map<Long, TurnBranchState> = emptyMap(),
+    onSwitchTurnBranch: (Long, Int) -> Unit = { _, _ -> },
+    alwaysShowDetailed: Boolean = false,
 ) {
 
     // 底部避让总高：composer 底距 + 实测高度 + 统一视觉间距。列表贴底留白与箭头
@@ -656,6 +890,7 @@ private fun HomePageContentBody(
     // composerBottomPadding*2 + composerHeight，composer 顶上方留一个视觉间距
     val bottomClearance = composerBottomPadding + composerHeight.value + composerGap
     val density = LocalDensity.current
+    val chatBackdrop = rememberLayerBackdrop()
 
     // 附件入口：加号 → 选项单（Photos / Camera / File / Folder）。
     val context = LocalContext.current
@@ -706,7 +941,7 @@ private fun HomePageContentBody(
         } else {
             // 相机没写成（用户取消 / 相机拒绝）：清掉临时文件
             Logger.w(ATTACH_LOG_TAG, "camera result not ok resultCode=${result.resultCode}")
-            target?.file?.let { runCatching { it.delete() } }
+            target?.file?.let { tryIgnore { it.delete() } }
         }
     }
 
@@ -714,71 +949,83 @@ private fun HomePageContentBody(
         modifier = Modifier
             .fillMaxSize()
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onContentTap,
-                ),
-            contentPadding = PaddingValues(
-                start = 20.dp,
-                top = liquidScreenTopPadding(24.dp),
-                end = 20.dp,
-                bottom = bottomClearance,
-            ),
+        LiquidOverscrollContainer(
+            overscrollController = overscrollController,
+            modifier = Modifier.fillMaxSize(),
         ) {
-            itemsIndexed(
-                items = uiState.turns,
-                key = { _, turn -> turn.id },
-            ) { index, turn ->
-                // User 气泡组内位置（渲染层：两个相邻 UserBubble 之间无任何内容即同组，见 userBubblePosition）
-                val position = userBubblePosition(uiState.turns, index)
-                // 组归一化：点组内任意一条都弹/聚合到组尾（操作行在组尾 turn 下渲染）
-                val tailIndex = userGroupTailIndex(uiState.turns, index)
-                val tailTurn = uiState.turns[tailIndex]
-                // 顶距：组中/组末用组内间隙与上一气泡连体；组首/单条维持 turn 分隔
-                val turnTopPad = when {
-                    index == 0 -> Modifier
-                    position == UserBubblePosition.GroupMid || position == UserBubblePosition.GroupLast ->
-                        Modifier.padding(top = UserBubbleGap)
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .layerBackdrop(chatBackdrop)
+                    .background(MaterialTheme.colorScheme.background)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onContentTap,
+                    ),
+                contentPadding = PaddingValues(
+                    start = 20.dp,
+                    top = liquidScreenTopPadding(24.dp),
+                    end = 20.dp,
+                    bottom = bottomClearance,
+                ),
+            ) {
+                itemsIndexed(
+                    items = uiState.turns,
+                    key = { _, turn -> turn.id },
+                ) { index, turn ->
+                    // User 气泡组内位置（渲染层：两个相邻 UserBubble 之间无任何内容即同组，见 userBubblePosition）
+                    val position = userBubblePosition(uiState.turns, index)
+                    // 组归一化：点组内任意一条都弹/聚合到组尾（操作行在组尾 turn 下渲染）
+                    val tailIndex = userGroupTailIndex(uiState.turns, index)
+                    val tailTurn = uiState.turns[tailIndex]
+                    // 顶距：组中/组末用组内间隙与上一气泡连体；组首/单条维持 turn 分隔；分割线紧凑居中
+                    val turnTopPad = when {
+                        index == 0 -> Modifier
+                        turn.isCompactedDivider -> Modifier.padding(top = 8.dp, bottom = 8.dp)
+                        position == UserBubblePosition.GroupMid || position == UserBubblePosition.GroupLast ->
+                            Modifier.padding(top = UserBubbleGap)
 
-                    else -> Modifier.padding(top = TurnSeparator)
+                        else -> Modifier.padding(top = TurnSeparator)
+                    }
+                    HomeChatTurnItem(
+                        turn = turn,
+                        userBubblePosition = position,
+                        isLastTurn = index == uiState.turns.lastIndex,
+                        actionsDisplay = actionsDisplay,
+                        userGroupTailTurnId = tailTurn.id,
+                        userGroupTappable = tailTurn.blocks.isNotEmpty() || tailIndex == uiState.turns.lastIndex,
+                        userGroupText = userGroupText(uiState.turns, index),
+                        onContentTap = onContentTap,
+                        onReGenerate = onReGenerate,
+                        onFork = onFork,
+                        onRewind = onRewind,
+                        expandedToolRuns = expandedToolRuns,
+                        expandedToolResults = expandedToolResults,
+                        expandedThinking = expandedThinking,
+                        onToggleToolRun = onToggleToolRun,
+                        onToggleToolResult = onToggleToolResult,
+                        onToggleThinking = onToggleThinking,
+                        expandedActionTurnId = expandedActionTurnId,
+                        expandedActionSource = expandedActionSource,
+                        activeThinkingKey = activeThinkingKey,
+                        onToggleActionRow = onToggleActionRow,
+                        isGenerating = uiState.isGenerating,
+                        branchIndex = turnBranches[turn.id]?.current ?: 1,
+                        branchCount = turnBranches[turn.id]?.total ?: 1,
+                        onSwitchBranch = { delta -> onSwitchTurnBranch(turn.id, delta) },
+                        alwaysShowDetailed = alwaysShowDetailed,
+                        modifier = turnTopPad.fillMaxWidth(),
+                    )
                 }
-                HomeChatTurnItem(
-                    turn = turn,
-                    userBubblePosition = position,
-                    isLastTurn = index == uiState.turns.lastIndex,
-                    actionsDisplay = actionsDisplay,
-                    userGroupTailTurnId = tailTurn.id,
-                    userGroupTappable = tailTurn.blocks.isNotEmpty() || tailIndex == uiState.turns.lastIndex,
-                    userGroupText = userGroupText(uiState.turns, index),
-                    onContentTap = onContentTap,
-                    onReGenerate = onReGenerate,
-                    onFork = onFork,
-                    onRewind = onRewind,
-                    expandedToolRuns = expandedToolRuns,
-                    expandedToolResults = expandedToolResults,
-                    expandedThinking = expandedThinking,
-                    onToggleToolRun = onToggleToolRun,
-                    onToggleToolResult = onToggleToolResult,
-                    onToggleThinking = onToggleThinking,
-                    expandedActionTurnId = expandedActionTurnId,
-                    expandedActionSource = expandedActionSource,
-                    activeThinkingKey = activeThinkingKey,
-                    onToggleActionRow = onToggleActionRow,
-                    isGenerating = uiState.isGenerating,
-                    modifier = turnTopPad.fillMaxWidth(),
-                )
-            }
-            item(key = "bottom_anchor") {
-                Spacer(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(1.dp),
-                )
+                item(key = "bottom_anchor") {
+                    Spacer(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp),
+                    )
+                }
             }
         }
 
@@ -802,60 +1049,102 @@ private fun HomePageContentBody(
             )
         }
 
-        LiquidChatComposer(
-            value = uiState.input,
-            onValueChange = onInputChange,
-            onSendClick = onSendClick,
-            onStopClick = onStopClick,
-            isGenerating = uiState.isGenerating,
-            pendingImages = pendingImages,
-            pendingFiles = pendingFiles,
-            onAttachImageClick = { attachSheetVisible = true },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .onFocusChanged { focusState ->
-                    onComposerFocusChanged(focusState.hasFocus)
-                }
-                .focusRequester(composerFocusRequester)
-                .padding(
-                    start = 20.dp,
-                    end = 20.dp,
-                    bottom = composerBottomPadding,
-                )
-                // 放在 padding 之后：只测 composer 本体高度，不含底边距
-                .onSizeChanged { size ->
-                    composerHeight.value = with(density) { size.height.toDp() }
-                },
-        )
+        CompositionLocalProvider(
+            LocalScreenBackdrop provides chatBackdrop,
+        ) {
+            LiquidChatComposer(
+                value = uiState.input,
+                onValueChange = onInputChange,
+                onSendClick = onSendClick,
+                onStopClick = onStopClick,
+                isGenerating = uiState.isGenerating,
+                contextProgress = uiState.contextProgress,
+                pendingImages = pendingImages,
+                pendingFiles = pendingFiles,
+                onAttachImageClick = { attachSheetVisible = true },
+                backdrop = chatBackdrop,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .onFocusChanged { focusState ->
+                        onComposerFocusChanged(focusState.hasFocus)
+                    }
+                    .focusRequester(composerFocusRequester)
+                    .padding(
+                        start = 20.dp,
+                        end = 20.dp,
+                        bottom = composerBottomPadding,
+                    )
+                    // 放在 padding 之后：只测 composer 本体高度，不含底边距
+                    .onSizeChanged { size ->
+                        composerHeight.value = with(density) { size.height.toDp() }
+                    },
+            )
+        }
 
         // 解除贴底锚定且不在底部时出现：点击恢复跟随并平滑滚回底部
         val scrollToBottomScope = rememberCoroutineScope()
+        val scrollToBottomInteractiveHighlight = remember(scrollToBottomScope) {
+            InteractiveHighlight(animationScope = scrollToBottomScope)
+        }
+        val isDarkTheme = LocalAppDarkTheme.current
+        val scrollToBottomShape = CircleShape
+        val scrollToBottomSurfaceColor = LiquidGlassPresets.ScrollToBottom.surfaceColor(isDarkTheme, MaterialTheme.colorScheme)
+
         AnimatedVisibility(
             visible = !followBottom.value && !isAtBottom,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = bottomClearance),
-            enter = fadeIn(tween(160)) + scaleIn(tween(180), initialScale = 0.82f),
-            exit = fadeOut(tween(100)) + scaleOut(tween(120), targetScale = 0.86f),
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(100)),
         ) {
             Box(
                 modifier = Modifier
                     .size(40.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    .clickable {
+                    .drawBackdrop(
+                        backdrop = chatBackdrop,
+                        shape = { scrollToBottomShape },
+                        highlight = { LiquidGlassPresets.ScrollToBottom.highlight(isDarkTheme) },
+                        shadow = { LiquidGlassPresets.ScrollToBottom.shadow(isDarkTheme) },
+                        effects = {
+                            LiquidGlassPresets.ScrollToBottom.applyEffects(this, isDarkTheme)
+                        },
+                        layerBlock = {
+                            applyLiquidInteractiveTransform(
+                                style = LiquidButtonInteractiveStyle,
+                                pressProgress = scrollToBottomInteractiveHighlight.pressProgress,
+                                offset = scrollToBottomInteractiveHighlight.offset,
+                                size = size,
+                            )
+                        },
+                        onDrawSurface = {
+                            drawRect(scrollToBottomSurfaceColor)
+                        },
+                    )
+                    .clip(scrollToBottomShape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        role = Role.Button,
+                    ) {
                         followBottom.value = true
                         scrollToBottomScope.launch {
                             listState.animateScrollToItem(uiState.turns.size)
                         }
-                    },
+                    }
+                    .then(scrollToBottomInteractiveHighlight.gestureModifier)
+                    .then(
+                        if (LiquidButtonInteractiveStyle.highlightEnabled) {
+                            scrollToBottomInteractiveHighlight.modifier
+                        } else {
+                            Modifier
+                        }
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     painter = painterResource(R.drawable.ic_arrow_down),
-                    contentDescription = stringResource(
-                        R.string.ui_home_scroll_to_bottom_content_description,
-                    ),
+                    contentDescription = "Scroll To Bottom Icon",
                     tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(18.dp),
                 )
@@ -957,9 +1246,9 @@ private fun isImportableImage(context: Context, uri: Uri, declaredType: String?)
     if (!isImage) return false
     // 超过图片管线上限的图会被 ingest 拒，而拒了之后草稿项是**静默消失**的，
     // 比「当一个文件附件」更糟。体积未知（-1）时放行，交给一致的上限去判。
-    val size = runCatching {
+    val size = tryOrNull {
         context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
-    }.getOrNull()
+    }
     return size == null || size <= IMAGE_MAX_BYTES
 }
 
@@ -977,7 +1266,7 @@ private const val IMAGE_MAX_BYTES = 12 * 1024 * 1024L
 /**
  * 造一个相机可以写的输出目标。路径与 provider 都对不上时返回 null（理论上不会）。
  */
-private fun createCameraTarget(context: Context): CameraTarget? = runCatching {
+private fun createCameraTarget(context: Context): CameraTarget? = runCatchingCancellable {
     val dir = File(context.cacheDir, CAMERA_CAPTURE_DIR).apply { mkdirs() }
     val file = File(dir, "zafiro_capture_${System.currentTimeMillis()}.jpg")
     CameraTarget(
@@ -1021,8 +1310,10 @@ private class GrantingTakePicture : ActivityResultContract<Uri, ActivityResult>(
  * 因此流式内容到达只会改变"自身→下一条"一侧，组首一侧的黏性由上一 turn 决定，组不随内容跳变。
  */
 private fun userBubblePosition(turns: List<HomeChatTurn>, index: Int): UserBubblePosition {
-    val stickyUp = index > 0 && turns[index - 1].blocks.isEmpty()
-    val stickyDown = index < turns.lastIndex && turns[index].blocks.isEmpty()
+    val current = turns.getOrNull(index)
+    if (current == null || current.isCompactedDivider) return UserBubblePosition.Single
+    val stickyUp = index > 0 && turns[index - 1].blocks.isEmpty() && !turns[index - 1].isCompactedDivider
+    val stickyDown = index < turns.lastIndex && turns[index].blocks.isEmpty() && !turns[index + 1].isCompactedDivider
     return when {
         stickyUp && stickyDown -> UserBubblePosition.GroupMid
         stickyUp -> UserBubblePosition.GroupLast
@@ -1037,16 +1328,17 @@ private fun userBubblePosition(turns: List<HomeChatTurn>, index: Int): UserBubbl
  */
 internal fun userGroupTailIndex(turns: List<HomeChatTurn>, index: Int): Int {
     var tail = index
-    while (tail < turns.lastIndex && turns[tail].blocks.isEmpty()) tail++
+    while (tail < turns.lastIndex && turns[tail].blocks.isEmpty() && !turns[tail].isCompactedDivider && !turns[tail + 1].isCompactedDivider) tail++
     return tail
 }
 
 /** index 所在 User 组的组内全部用户文本：按序、双换行分隔、跳过空白（纯图片 turn）。 */
 internal fun userGroupText(turns: List<HomeChatTurn>, index: Int): String {
     var head = index
-    while (head > 0 && turns[head - 1].blocks.isEmpty()) head--
+    while (head > 0 && turns[head - 1].blocks.isEmpty() && !turns[head - 1].isCompactedDivider) head--
     val tail = userGroupTailIndex(turns, index)
     return turns.subList(head, tail + 1)
+        .filterNot { it.isCompactedDivider }
         .map { it.userText }
         .filter { it.isNotBlank() }
         .joinToString("\n\n")
@@ -1079,8 +1371,20 @@ private fun HomeChatTurnItem(
     activeThinkingKey: String? = null,
     onToggleActionRow: (Long, ActionSource) -> Unit,
     isGenerating: Boolean,
+    branchIndex: Int = 1,
+    branchCount: Int = 1,
+    onSwitchBranch: (Int) -> Unit = {},
+    alwaysShowDetailed: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    if (turn.isCompactedDivider) {
+        CompactedDividerItem(
+            isCompacting = turn.isCompacting,
+            modifier = modifier,
+        )
+        return
+    }
+
     val alwaysVisible = actionsDisplay == MessageActionsDisplay.Always
     // Agent 操作行：仅正生成中的末轮隐藏；已结束的旧 turn 常显（复制无害，
     // 重新生成/分叉/回退在生成中点按弹 toast，见 guarded 回调）
@@ -1231,6 +1535,7 @@ private fun HomeChatTurnItem(
                                     onToggleActionRow(turn.id, ActionSource.Agent)
                                 }
                             },
+                            alwaysShowDetailed = alwaysShowDetailed,
                         )
                         blockIndex = runEnd
                     } else {
@@ -1277,10 +1582,21 @@ private fun HomeChatTurnItem(
                                 ) {
                                     val body = errorUi.bodyRes?.let { stringResource(it) }
                                         ?: errorUi.body.orEmpty()
-                                    if (body.isNotEmpty()) {
+                                    val formattedBody = remember(body) {
+                                        ToolPresentation.prettyPrintIfJson(body)
+                                    }
+                                    if (!formattedBody.isNullOrEmpty()) {
+                                        val isMonospace = remember(formattedBody) {
+                                            formattedBody.contains('\n') || formattedBody.startsWith('{') || formattedBody.startsWith('[')
+                                        }
+                                        val style = if (isMonospace) {
+                                            MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                                        } else {
+                                            MaterialTheme.typography.bodySmall
+                                        }
                                         ToolResultText(
-                                            text = body,
-                                            style = MaterialTheme.typography.bodySmall,
+                                            text = formattedBody,
+                                            style = style,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
@@ -1318,9 +1634,11 @@ private fun HomeChatTurnItem(
                                 val blockIndexNow = blockIndex
                                 val thinkingKey = "${turn.id}_$blockIndexNow"
                                 val isThinkingExpanded = thinkingKey in expandedThinking
+                                val thinkingTitle =
+                                    stringResource(R.string.ui_home_thinking_title)
                                 CollapsibleBlock(
                                     icon = ToolPresentation.Thinking,
-                                    title = "Thinking" + ToolPresentation
+                                    title = thinkingTitle + ToolPresentation
                                         .previewOf(block.text)
                                         ?.let { " · $it" }
                                         .orEmpty(),
@@ -1379,8 +1697,58 @@ private fun HomeChatTurnItem(
                 },
                 onReGenerate = { guardedReGenerate(turn.id) },
                 onFork = { guardedFork(turn.id) },
+                // 翻页器由该轮自身分支数驱动，各轮次独立显示
+                branchIndex = branchIndex,
+                branchCount = branchCount,
+                onSwitchBranch = onSwitchBranch,
             )
         }
+    }
+}
+
+@Composable
+private fun CompactedDividerItem(
+    isCompacting: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val dots = if (isCompacting) {
+        val dotCount by produceState(initialValue = 1) {
+            while (true) {
+                delay(400)
+                value = (value % 3) + 1
+            }
+        }
+        ".".repeat(dotCount)
+    } else {
+        ""
+    }
+
+    Row(
+        modifier = modifier
+            .padding(vertical = 6.dp)
+            .fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            thickness = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+        )
+        Text(
+            text = if (isCompacting) {
+                "${stringResource(R.string.ui_home_conversation_compacting)}$dots"
+            } else {
+                stringResource(R.string.ui_home_conversation_compacted)
+            },
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+        )
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            thickness = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+        )
     }
 }
 
@@ -1499,6 +1867,102 @@ private fun HomePageContentPreview() {
                 expandedActionTurnId = null,
                 expandedActionSource = null,
                 onToggleActionRow = { _, _ -> },
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeTitleConfigChip(
+    uiStateProvider: () -> HomeChatUiState,
+    onChipClick: () -> Unit,
+    onAnchorBoundsChanged: (Rect) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val uiState = uiStateProvider()
+    val isDarkTheme = LocalAppDarkTheme.current
+    val activeConfig = uiState.displayConfig
+    val titleText = activeConfig?.name ?: stringResource(R.string.app_name)
+    val hasConfigs = uiState.savedConfigs.isNotEmpty()
+
+    val latestOnAnchorBoundsChanged by rememberUpdatedState(onAnchorBoundsChanged)
+    val latestOnChipClick by rememberUpdatedState(onChipClick)
+    var chipCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+
+    Row(
+        modifier = modifier
+            .onGloballyPositioned { coordinates ->
+                chipCoordinates = coordinates
+                if (coordinates.isAttached) {
+                    latestOnAnchorBoundsChanged(coordinates.boundsInRoot())
+                }
+            }
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(
+                enabled = hasConfigs,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {
+                    chipCoordinates?.takeIf { it.isAttached }?.boundsInRoot()?.let { bounds ->
+                        latestOnAnchorBoundsChanged(bounds)
+                    }
+                    latestOnChipClick()
+                },
+            )
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = titleText,
+            style = TextStyle(
+                fontSize = 19.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (isDarkTheme) Color.White else Color.Black,
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (hasConfigs) {
+            Icon(
+                imageVector = Icons.Default.KeyboardArrowDown,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = if (isDarkTheme) Color.White.copy(alpha = 0.7f) else Color.Black.copy(alpha = 0.7f),
+            )
+        }
+    }
+}
+
+@Preview(
+    name = "Compacted Divider Alignment Preview",
+    showBackground = true,
+    widthDp = 400,
+    heightDp = 500,
+)
+@Composable
+private fun CompactedDividerAlignmentPreview() {
+    BaseTheme {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 20.dp, vertical = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            AssistantOutputText(
+                text = "这是一段用于测试两端对齐的 Markdown 文本。请观察下方分割线两端与本段文本起止边缘是否在同一条垂线上（start-to-start, end-to-end）。"
+            )
+
+            CompactedDividerItem(isCompacting = true)
+
+            AssistantOutputText(
+                text = "这是位于两条分割线中间的普通模型回复段落。"
+            )
+
+            CompactedDividerItem(isCompacting = false)
+
+            AssistantOutputText(
+                text = "这是压缩之后的新一轮回答。上方分割线展示的是「对话已压缩」完成态。"
             )
         }
     }

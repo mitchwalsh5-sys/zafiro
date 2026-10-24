@@ -67,6 +67,7 @@ sealed interface LlmStreamEvent {
         val maxAttempts: Int,
         val delayMs: Long,
         val reason: String,
+        val discardPartial: Boolean = false,
     ) : LlmStreamEvent
 
     /** 回合正常结束（纯终态标记；显示文本一律以 TextDelta 累积为准）。 */
@@ -87,6 +88,7 @@ enum class LlmErrorCode {
     ToolExecutionFailed,
     IdleTimeout,
     OutputTruncated,
+    Repetition,
 }
 
 data class ToolCallStatus(

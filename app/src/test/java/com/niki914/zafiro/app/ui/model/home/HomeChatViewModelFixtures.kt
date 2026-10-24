@@ -5,18 +5,22 @@ import com.niki914.okia.conversation.SessionSnapshot
 import com.niki914.okia.message.ContentBlock
 import com.niki914.okia.message.Message
 import com.niki914.zafiro.api.Agent
+import com.niki914.zafiro.api.AgentControl
+import com.niki914.zafiro.api.AgentManager
 import com.niki914.zafiro.api.Approver
 import com.niki914.zafiro.api.TurnStart
 import com.niki914.zafiro.api.model.AgentState
 import com.niki914.zafiro.api.model.ApprovalDecision
 import com.niki914.zafiro.api.model.ApprovalRequest
 import com.niki914.zafiro.api.model.Attachment
+import com.niki914.zafiro.api.model.ContextUsage
 import com.niki914.zafiro.api.model.Conversation
 import com.niki914.zafiro.api.model.ConversationId
 import com.niki914.zafiro.api.model.ConversationTurn
 import com.niki914.zafiro.api.model.Draft
 import com.niki914.zafiro.api.model.DraftImage
 import com.niki914.zafiro.api.model.TurnBlock
+import com.niki914.zafiro.api.model.TurnOutcome
 import com.niki914.zafiro.app.conversation.ConversationFormatter
 import com.niki914.zafiro.app.conversation.ConversationRecord
 import com.niki914.zafiro.app.conversation.ConversationSummary
@@ -24,6 +28,7 @@ import com.niki914.zafiro.app.conversation.ForkKind
 import com.niki914.zafiro.app.conversation.ForkResult
 import com.niki914.zafiro.app.ui.model.TextPacer
 import com.niki914.zafiro.business.agent.turnIdAt
+import com.niki914.zafiro.repo.LlmConfigsDocument
 import com.niki914.zafiro.service.installService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,9 +36,34 @@ import kotlinx.coroutines.flow.asStateFlow
 
 internal fun fixture(
     store: FakeHomeConversationStore = FakeHomeConversationStore(),
+    configDependencies: HomeChatConfigDependencies = HomeChatConfigDependencies(
+        loadConfigs = { LlmConfigsDocument() },
+    ),
 ): Fixture {
     val agent = FakeHomeAgent(store)
-    installService<Agent>(agent)
+    val agentFlow = MutableStateFlow<Agent>(agent)
+    installService<AgentManager>(object : AgentManager {
+        override val main: Agent get() = agentFlow.value
+        override val mainFlow: StateFlow<Agent> = agentFlow.asStateFlow()
+        override suspend fun switchTo(conversationId: String): Agent {
+            agent.load(ConversationId(conversationId))
+            agentFlow.value = agent
+            return agent
+        }
+
+        override fun startNewConversation(): Agent {
+            agent.mutableDraft.value = Draft()
+            agent.mutableConversation.value = Conversation()
+            agent.mutableStatus.value = AgentState.Idle()
+            agentFlow.value = agent
+            return agent
+        }
+
+        override val activeStates: StateFlow<Map<String, AgentState>> = MutableStateFlow(emptyMap())
+        override fun createTaskAgent(isPersistent: Boolean): Agent = agent
+        override fun destroy(conversationId: String) {}
+        override val control: AgentControl = agent
+    })
     return Fixture(
         store = store,
         agent = agent,
@@ -41,6 +71,7 @@ internal fun fixture(
             conversations = store,
             textPacer = TextPacer(delayFn = {}),
             thinkingPacer = TextPacer(delayFn = {}),
+            configDependencies = configDependencies,
         ),
     )
 }
@@ -52,11 +83,13 @@ internal data class Fixture(
 )
 
 internal class FakeHomeAgent(private val store: FakeHomeConversationStore) : Agent {
-    private val mutableDraft = MutableStateFlow(Draft())
-    private val mutableConversation = MutableStateFlow(Conversation())
-    private val mutableStatus = MutableStateFlow<AgentState>(AgentState.Idle())
+    val mutableDraft = MutableStateFlow(Draft())
+    val mutableConversation = MutableStateFlow(Conversation())
+    val mutableStatus = MutableStateFlow<AgentState>(AgentState.Idle())
+    val mutableContextUsage = MutableStateFlow<ContextUsage?>(null)
     override val draft: StateFlow<Draft> = mutableDraft.asStateFlow()
     override val conversation: StateFlow<Conversation> = mutableConversation.asStateFlow()
+    override val contextUsage: StateFlow<ContextUsage?> = mutableContextUsage.asStateFlow()
     override val status: StateFlow<AgentState> = mutableStatus.asStateFlow()
 
     var streamResult = TurnStart.Started
@@ -108,7 +141,7 @@ internal class FakeHomeAgent(private val store: FakeHomeConversationStore) : Age
                 blocks = streamText?.let { listOf(TurnBlock.Text("t$turnIndex:0", it)) }.orEmpty(),
             ),
         )
-        mutableStatus.value = AgentState.Idle(com.niki914.zafiro.api.model.TurnOutcome.Completed)
+        mutableStatus.value = AgentState.Idle(TurnOutcome.Completed)
         store.recordNewConversation(id.value, draft.text)
         return TurnStart.Started
     }
@@ -125,12 +158,22 @@ internal class FakeHomeAgent(private val store: FakeHomeConversationStore) : Age
         mutableStatus.value = AgentState.Idle()
     }
 
+    var releaseCount = 0
+    override fun release() {
+        releaseCount++
+    }
+
+    var boundConfigId: String = ""
+    override fun bindConfig(configId: String) {
+        boundConfigId = configId
+    }
+
     override suspend fun load(id: ConversationId) {
         lastLoadedId = id
         val record = store.getConversation(id.value)
-        mutableConversation.value = record?.let { ConversationFormatter.toConversation(it.snapshot) }
-            ?: Conversation(id = id)
-        mutableDraft.value = record?.let { Draft(it.draftText) } ?: Draft()
+        mutableConversation.value =
+            record?.let { ConversationFormatter.toConversation(it.snapshot) }
+                ?: Conversation(id = id)
         mutableStatus.value = AgentState.Idle()
         store.setLastOpenedConversationId(id.value)
     }
@@ -199,27 +242,94 @@ internal class FakeHomeConversationStore(
 ) : HomeConversationStore {
     private val records = linkedMapOf<String, ConversationRecord>()
     private var lastOpened = ""
+    private var draft = ""
 
     override suspend fun lastOpenedConversationId() = lastOpened
-    override suspend fun setLastOpenedConversationId(value: String) { lastOpened = value }
+    override suspend fun setLastOpenedConversationId(value: String) {
+        lastOpened = value
+    }
+
     override suspend fun loadLastConversationOnStartup() = restoreOnStartup
     override suspend fun getConversation(id: String) = records[id]
-    override suspend fun updateDraft(conversationId: String, draftText: String) {
-        records[conversationId]?.let { records[conversationId] = it.copy(draftText = draftText) }
+    val boundConfigs = linkedMapOf<String, String>()
+    var currentActiveConfigId = "active-default"
+
+    override suspend fun draftText(): String = draft
+    override suspend fun setDraftText(value: String) {
+        draft = value
     }
-    override suspend fun deleteConversation(id: String) { records.remove(id) }
+
+    override suspend fun bindConfig(conversationId: String) {
+        if (records[conversationId]?.configId?.isNotBlank() == true) return
+        boundConfigs[conversationId] = currentActiveConfigId
+        records[conversationId]?.let {
+            records[conversationId] = it.copy(configId = currentActiveConfigId)
+        }
+    }
+
+    override suspend fun updateConfigId(conversationId: String, configId: String) {
+        boundConfigs[conversationId] = configId
+        records[conversationId]?.let {
+            records[conversationId] = it.copy(configId = configId)
+        }
+    }
+
+    override suspend fun deleteConversation(id: String) {
+        // 与仓储一致：删除一个会话 = 删掉它的整个分支组
+        val rootId = records[id]?.summary?.rootId ?: id
+        records.keys.filter { key ->
+            val summary = records[key]?.summary
+            key == rootId || summary?.rootId == rootId
+        }.forEach { records.remove(it) }
+    }
+
+    override suspend fun branchGroup(conversationId: String): List<ConversationSummary> {
+        val rootId = records[conversationId]?.summary?.rootId ?: return emptyList()
+        val group = records.values
+            .map { it.summary }
+            .filter { it.rootId == rootId }
+            .sortedBy { it.createdAt }
+        return if (group.size <= 1) emptyList() else group
+    }
+
+    override suspend fun branchGroupIds(conversationId: String): List<String> {
+        val rootId = records[conversationId]?.summary?.rootId ?: return listOf(conversationId)
+        return records.values
+            .map { it.summary }
+            .filter { it.rootId == rootId }
+            .sortedBy { it.createdAt }
+            .map { it.id }
+    }
+
+    override suspend fun latestBranchId(rootId: String): String? {
+        return records.values
+            .map { it.summary }
+            .filter { it.rootId == rootId }
+            .maxByOrNull { it.updatedAt }
+            ?.id
+    }
+
+    override suspend fun clearUnread(conversationId: String) {}
 
     fun recordNewConversation(id: String, title: String) {
         if (id in records) return
         records[id] = ConversationRecord(
-            summary = ConversationSummary(id, title, false, records.size.toLong(), records.size.toLong(), title, 0),
+            summary = ConversationSummary(
+                id,
+                title,
+                false,
+                records.size.toLong(),
+                records.size.toLong(),
+                title,
+                0,
+            ),
             draftText = "",
             snapshot = SessionSnapshot(id, null, 1, emptyList()),
         )
         lastOpened = id
     }
 
-    suspend fun createRecord(id: String, title: String) {
+    suspend fun createRecord(id: String, title: String, configId: String = "") {
         records[id] = ConversationRecord(
             summary = ConversationSummary(
                 id = id,
@@ -232,6 +342,7 @@ internal class FakeHomeConversationStore(
             ),
             draftText = "",
             snapshot = SessionSnapshot(id = id, leafId = null, version = 1, entries = emptyList()),
+            configId = configId,
         )
     }
 
@@ -241,7 +352,8 @@ internal class FakeHomeConversationStore(
 
     override suspend fun forkAtTurn(sourceId: String, turnIndex: Int, kind: ForkKind): ForkResult? {
         val source = records[sourceId] ?: return null
-        val projected = ConversationFormatter.projectLeaf(source.snapshot.entries, source.snapshot.leafId)
+        val projected =
+            ConversationFormatter.projectLeaf(source.snapshot.entries, source.snapshot.leafId)
         val userEntryIndex = projected.withIndex()
             .filter { (_, entry) -> entry.message is Message.User }
             .let { users -> users.getOrNull(turnIndex)?.index ?: -1 }
@@ -250,6 +362,7 @@ internal class FakeHomeConversationStore(
             ForkKind.Fork -> (userEntryIndex + 1 until projected.size)
                 .firstOrNull { projected[it].message is Message.User }
                 ?: projected.size
+
             ForkKind.Regenerate, ForkKind.Rewind -> userEntryIndex
         }
         val entries = projected.take(keepEntryCount)
@@ -259,8 +372,19 @@ internal class FakeHomeConversationStore(
             ForkKind.Rewind -> "Rewind · "
         }
         val id = "fork-${records.size}"
+        // Regenerate 聚成同一组：共享原始标题并记录父节点和分叉轮次；Fork/Rewind 另起一线
+        val isRegenerate = kind == ForkKind.Regenerate
+        val rootId = if (isRegenerate) source.summary.rootId else id
+        val parentId = if (isRegenerate) source.summary.id else null
+        val forkTurn = if (isRegenerate) turnIndex else null
         records[id] = source.copy(
-            summary = source.summary.copy(id = id, title = prefix + source.summary.title),
+            summary = source.summary.copy(
+                id = id,
+                title = if (isRegenerate) source.summary.title else prefix + source.summary.title,
+                rootId = rootId,
+                parentId = parentId,
+                forkTurn = forkTurn,
+            ),
             draftText = "",
             snapshot = SessionSnapshot(id, entries.lastOrNull()?.id, 1, entries),
         )

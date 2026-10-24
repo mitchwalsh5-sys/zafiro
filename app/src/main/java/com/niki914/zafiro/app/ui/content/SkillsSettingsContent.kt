@@ -14,6 +14,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
@@ -47,6 +48,7 @@ fun SkillsSettingsContent(
     val viewModel = pageViewModel<SkillSettingsViewModel>()
     val uiState by viewModel.uiStateFlow.collectAsState()
     val context = LocalContext.current
+    val resources = LocalResources.current
 
     LaunchedEffect(Unit) {
         viewModel.sendIntent(SkillSettingsIntent.Load)
@@ -60,7 +62,7 @@ fun SkillsSettingsContent(
                 is SkillSettingsEffect.ShowImportErrorToast ->
                     Toast.makeText(
                         context,
-                        effect.message ?: context.getString(effect.fallbackResId),
+                        effect.message ?: resources.getString(effect.fallbackResId),
                         Toast.LENGTH_SHORT
                     ).show()
 
@@ -88,13 +90,12 @@ fun SkillsSettingsContent(
         }
     }
 
-    val importLabel = stringResource(R.string.skill_import_button)
-    val pageChromeContribution = remember(importLabel) {
+    val pageChromeContribution = remember {
         PageChromeContribution(
             rightAction = TopBarActionSpec(
                 icon = Icons.Default.Add,
                 onClick = { launcher.launch(null) },
-                contentDescription = importLabel,
+                contentDescription = "Add Button",
             ),
         )
     }
@@ -147,7 +148,7 @@ private fun SkillsSettingsContentBody(
                 }
 
                 is SettingsRowAction.ToggleChanged -> onEnabledChange(action.id, action.checked)
-                is SettingsRowAction.Click -> Unit
+                else -> Unit
             }
         },
     )

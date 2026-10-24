@@ -1,16 +1,18 @@
 package com.niki914.zafiro.util
 
+import com.niki914.zafiro.chat.util.SilentLoggerRule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
+import java.nio.file.Files
 
 class ToolOutputTruncatorTest {
 
     @get:Rule
-    val silentLogger = com.niki914.zafiro.chat.util.SilentLoggerRule()
+    val silentLogger = SilentLoggerRule()
 
     @Test
     fun head_withinLimits_returnsUntouched() {
@@ -96,7 +98,7 @@ class ToolOutputTruncatorTest {
 
     // ---- filterForAgent（统一入口：截断 + 导出 + 消费）----
 
-    private fun tempDir(): File = java.nio.file.Files.createTempDirectory("export").toFile()
+    private fun tempDir(): File = Files.createTempDirectory("export").toFile()
 
     @Test
     fun filter_smallOutput_noExportAndFileDeleted() {
@@ -132,7 +134,8 @@ class ToolOutputTruncatorTest {
         val exportDir = tempDir()
         val big = "y".repeat(60_000)
 
-        val result = ToolOutputTruncator.filterForAgent(big, existingFile = null, exportDir = exportDir)
+        val result =
+            ToolOutputTruncator.filterForAgent(big, existingFile = null, exportDir = exportDir)
 
         assertTrue(result.contains("[Full output: "))
         val exported = exportDir.listFiles()!!.single()

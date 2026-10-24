@@ -30,6 +30,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
@@ -187,7 +188,10 @@ internal class RealAgentLoop : AgentLoop {
 
         while (true) {
             // 每次段尝试独立 StreamState：重试丢弃上次尝试的 partial
-            val state = StreamState()
+            val state = StreamState(request.repetitionConfig)
+            // 回合内段序号（从 1 起）：请求级日志的身份，含回合层重试
+            val segment = turnAttempt + 1
+            val segmentStartedAtMs = System.currentTimeMillis()
 
             // 1. Serialization 时机 + buildRequest（每段尝试 fresh request，对齐 pi）
             val httpRequest = try {
@@ -226,7 +230,7 @@ internal class RealAgentLoop : AgentLoop {
             }
 
             // 2-3. 发送阶段（传输层重试）：beforeRequest → stream → afterRequest → 前置校验
-            when (val send = sendWithTransportRetry(request, onEvent, httpRequest)) {
+            when (val send = sendWithTransportRetry(request, onEvent, httpRequest, segment)) {
                 is SendResult.Failed -> {
                     if (send.finalized) {
                         // hook 失败已 fail（TurnFailed 已发、partial 已 commit）
@@ -258,14 +262,29 @@ internal class RealAgentLoop : AgentLoop {
                     // 4. 流收集（idle 检测内嵌）
                     try {
                         val assistant = collectEvents(request, onEvent, send.response.lines, state)
+                        request.requestLogger?.completed(
+                            segment,
+                            send.attempt,
+                            System.currentTimeMillis() - segmentStartedAtMs,
+                            assistant.stopReason?.name,
+                            false
+                        )
                         return SegmentOutcome.Success(assistant)
                     } catch (e: StreamTerminated) {
+                        request.requestLogger?.completed(
+                            segment,
+                            send.attempt,
+                            System.currentTimeMillis() - segmentStartedAtMs,
+                            null,
+                            true
+                        )
                         if (e.error.code.isRetryable && turnAttempt < turnMax) {
                             turnAttempt++
                             val delay = turnPolicy!!.delayMs(turnAttempt)
                             onEvent(
                                 TurnEvent.RetryScheduled(
-                                    turnAttempt, turnMax, delay, "stream ${e.error.code.name}"
+                                    turnAttempt, turnMax, delay, "stream ${e.error.code.name}",
+                                    discardPartial = true
                                 )
                             )
                             delay(delay)
@@ -281,6 +300,13 @@ internal class RealAgentLoop : AgentLoop {
                         )
                     } catch (e: StreamIdleTimedOut) {
                         // 事件 + partial commit 已在收集内完成；独立终态，不重试
+                        request.requestLogger?.completed(
+                            segment,
+                            send.attempt,
+                            System.currentTimeMillis() - segmentStartedAtMs,
+                            null,
+                            true
+                        )
                         return SegmentOutcome.Finished(TurnResult.IdleTimeout)
                     } catch (e: CancellationException) {
                         withContext(NonCancellable) { commitPartial(request, state) }
@@ -297,12 +323,25 @@ internal class RealAgentLoop : AgentLoop {
     private suspend fun sendWithTransportRetry(
         request: LoopRequest,
         onEvent: suspend (TurnEvent) -> Unit,
-        httpRequest: HttpRequest
+        httpRequest: HttpRequest,
+        segment: Int
     ): SendResult {
         val policy = request.retryPolicy
         val max = policy.maxAttempts
         var attempt = 0
         while (true) {
+            // 请求级日志：每次真实发送前记一条（含传输层重试）
+            val sendStartedAtMs = System.currentTimeMillis()
+            val sendAttempt = attempt + 1
+            request.requestLogger?.started(segment, sendAttempt)
+            // 未进流收集就结束的路径（hook 失败 / 重试或耗尽）在本地成对收尾，
+            // 否则日志只剩孤立的 started，无法区分「请求挂住」与「请求已失败」
+            fun logSendEnd(stopReason: String?, failed: Boolean) {
+                request.requestLogger?.completed(
+                    segment, sendAttempt, System.currentTimeMillis() - sendStartedAtMs,
+                    stopReason, failed
+                )
+            }
             val failure = try {
                 val requestHolder = HttpRequestHolder(httpRequest)
                 hookStep(
@@ -310,6 +349,7 @@ internal class RealAgentLoop : AgentLoop {
                     onEvent,
                     "beforeRequest"
                 ) { it.beforeRequest(requestHolder) }?.let {
+                    logSendEnd("hook failed", true)
                     return SendResult.Failed(
                         LLMError(LLMErrorCode.HookFailed, "beforeRequest hook failed"),
                         finalized = true
@@ -318,6 +358,7 @@ internal class RealAgentLoop : AgentLoop {
                 val sent = requestHolder.request
                 val resp = request.httpEngine.stream(sent)
                 hookStep(request, onEvent, "afterRequest") { it.afterRequest(sent) }?.let {
+                    logSendEnd("hook failed", true)
                     return SendResult.Failed(
                         LLMError(LLMErrorCode.HookFailed, "afterRequest hook failed"),
                         finalized = true
@@ -327,7 +368,8 @@ internal class RealAgentLoop : AgentLoop {
                 when (resp) {
                     is StreamResponse.Error -> LLMError(
                         code = classifyStatus(resp.statusCode),
-                        message = resp.body.take(MAX_ERROR_BODY_CHARS),
+                        message = resp.body.take(MAX_ERROR_BODY_CHARS)
+                            .ifBlank { "HTTP ${resp.statusCode}" },
                         statusCode = resp.statusCode,
                         retryDelayMs = parseRetryAfter(resp.headers)
                     )
@@ -342,7 +384,7 @@ internal class RealAgentLoop : AgentLoop {
                                 null, resp.statusCode
                             )
                         } else {
-                            return SendResult.Ok(resp)
+                            return SendResult.Ok(resp, attempt + 1)
                         }
                     }
                 }
@@ -355,12 +397,14 @@ internal class RealAgentLoop : AgentLoop {
 
             if (failure.code.isRetryable && attempt < max) {
                 attempt++
+                logSendEnd("retry ${failure.code.name}", true)
                 val delay = failure.retryDelayMs ?: policy.delayMs(attempt)
                 val reason = failure.statusCode?.let { "HTTP $it" } ?: "stream failed"
                 onEvent(TurnEvent.RetryScheduled(attempt, max, delay, reason))
                 delay(delay)
                 continue
             }
+            logSendEnd(failure.code.name, true)
             return SendResult.Failed(failure)
         }
     }
@@ -393,6 +437,12 @@ internal class RealAgentLoop : AgentLoop {
         } catch (e: StreamIdleTimedOut) {
             // idle 超时哨兵：非段失败（Exception 子类，须在兜底前重抛）
             throw e
+        } catch (e: StreamRepetition) {
+            // 复读熔断：不可重试（重发会再复读一遍）。必须排在泛 Exception 兜底之前，
+            // 否则被误分类为 Transport 并触发重发。
+            throw StreamTerminated(
+                LLMError(LLMErrorCode.Repetition, "repetition detected in stream")
+            )
         } catch (e: CallbackException) {
             // 事件分发失败（业务 onEvent 抛异常）：host 侧代码问题，不可重试。
             // 与协议流异常分离——不伪装成 Transport（否则配置 turnRetryPolicy 时
@@ -411,9 +461,9 @@ internal class RealAgentLoop : AgentLoop {
         }
     }
 
-    // idle 检测版收集：channel + select。任何 ProtocolEvent 到达重置计时
-    // （agent 活跃度，G7）；keep-alive（SseLine 层，不产出 ProtocolEvent）
-    // 不重置；流结束（channel close）但无 Completed → 协议不完整失败。
+    // Protocol activity resets idle. Providers may allow bounded pre-inference
+    // queue heartbeats; after the first protocol event only model progress counts.
+    // EOF without Completed remains an incomplete protocol response.
     private suspend fun collectWithIdle(
         request: LoopRequest,
         onEvent: suspend (TurnEvent) -> Unit,
@@ -421,10 +471,24 @@ internal class RealAgentLoop : AgentLoop {
         state: StreamState,
         timeoutMs: Long
     ): Unit = coroutineScope {
-        val channel = Channel<ProtocolEvent>(Channel.UNLIMITED)
+        val channel = Channel<StreamSignal>(Channel.UNLIMITED)
+        var awaitingInference = true
+        val queueDeadline = request.protocolMapper.compat.queuedKeepAliveLimitMs?.let { limit ->
+            launch {
+                delay(limit)
+                channel.send(StreamSignal.Idle)
+            }
+        }
+        val observedLines = lines.onEach { line ->
+            if (line.data == null && awaitingInference && queueDeadline != null) {
+                channel.send(StreamSignal.KeepAlive)
+            }
+        }
         val producer = launch {
             try {
-                request.protocolMapper.parseStream(lines).collect { channel.send(it) }
+                request.protocolMapper.parseStream(observedLines).collect {
+                    channel.send(StreamSignal.Event(it))
+                }
             } finally {
                 channel.close()
             }
@@ -432,11 +496,16 @@ internal class RealAgentLoop : AgentLoop {
         while (true) {
             when (val signal = select<StreamSignal> {
                 channel.onReceiveCatching { result ->
-                    if (result.isSuccess) StreamSignal.Event(result.getOrThrow()) else StreamSignal.Closed
+                    if (result.isSuccess) result.getOrThrow() else StreamSignal.Closed
                 }
                 onTimeout(timeoutMs) { StreamSignal.Idle }
             }) {
-                is StreamSignal.Event -> handleProtocolEvent(request, onEvent, signal.event, state)
+                is StreamSignal.Event -> {
+                    awaitingInference = false
+                    queueDeadline?.cancel()
+                    handleProtocolEvent(request, onEvent, signal.event, state)
+                }
+                StreamSignal.KeepAlive -> Unit
                 is StreamSignal.Closed -> throw StreamTerminated(
                     LLMError(LLMErrorCode.Parse, "stream ended without Completed")
                 )
@@ -466,38 +535,46 @@ internal class RealAgentLoop : AgentLoop {
             is ProtocolEvent.TextDelta -> {
                 // 块切换：thinking 先行（DeepSeek 顺序），到 text 时收尾 thinking
                 flushThinking(state, onEvent)
-                if (!state.textStarted) {
+                val isFirstChunk = !state.textStarted
+                if (isFirstChunk) {
                     state.textStarted = true
-                    state.text.append(event.text)
-                    onEvent(TurnEvent.TextStarted(state.blocks.size, state.partialMessage()))
-                } else {
-                    state.text.append(event.text)
-                    onEvent(
+                    state.textRepetition.reset()
+                }
+                state.text.append(event.text)
+                if (state.textRepetition.feed(event.text)) throw StreamRepetition
+                onEvent(
+                    if (isFirstChunk) {
+                        TurnEvent.TextStarted(state.blocks.size, state.partialMessage())
+                    } else {
                         TurnEvent.TextDelta(
                             state.blocks.size,
                             event.text,
                             state.partialMessage()
                         )
-                    )
-                }
+                    }
+                )
             }
 
             is ProtocolEvent.ThinkingDelta -> {
                 flushText(state, onEvent)
-                if (!state.thinkingStarted) {
+                val isFirstChunk = !state.thinkingStarted
+                if (isFirstChunk) {
                     state.thinkingStarted = true
-                    state.thinking.append(event.text)
-                    onEvent(TurnEvent.ThinkingStarted(state.blocks.size, state.partialMessage()))
-                } else {
-                    state.thinking.append(event.text)
-                    onEvent(
+                    state.thinkingRepetition.reset()
+                }
+                state.thinking.append(event.text)
+                if (state.thinkingRepetition.feed(event.text)) throw StreamRepetition
+                onEvent(
+                    if (isFirstChunk) {
+                        TurnEvent.ThinkingStarted(state.blocks.size, state.partialMessage())
+                    } else {
                         TurnEvent.ThinkingDelta(
                             state.blocks.size,
                             event.text,
                             state.partialMessage()
                         )
-                    )
-                }
+                    }
+                )
             }
 
             is ProtocolEvent.ThinkingSignature -> {
@@ -999,24 +1076,28 @@ private sealed interface SegmentOutcome {
 
 /** 发送阶段出口：Ok = 可进 SSE 解析；Failed = 重试耗尽 / 不可重试 / hook 已 fail。 */
 private sealed interface SendResult {
-    data class Ok(val response: StreamResponse.Ok) : SendResult
+    data class Ok(val response: StreamResponse.Ok, val attempt: Int) : SendResult
     data class Failed(val error: LLMError, val finalized: Boolean = false) : SendResult
 }
 
 /** idle 收集循环的选择信号。 */
 private sealed interface StreamSignal {
     data class Event(val event: ProtocolEvent) : StreamSignal
+    object KeepAlive : StreamSignal
     object Closed : StreamSignal
     object Idle : StreamSignal
 }
 
 /** 每轮流式累积状态：partial 快照由它派生（thinking/text 进行中、toolCall 已 Ready）。 */
-private class StreamState {
+private class StreamState(repetitionConfig: RepetitionConfig? = null) {
     val blocks = mutableListOf<ContentBlock>() // 已完成的块（text / thinking / toolCall），顺序即流到达顺序
     val text = StringBuilder() // 进行中 text
     var textStarted = false
     val thinking = StringBuilder() // 进行中 thinking
     var thinkingStarted = false
+    // 复读检测：正文与思考各持独立实例（阈值来自宿主灵敏度档），块开始重置（跨块不累计）
+    val textRepetition = repetitionConfig?.let { RepetitionDetector(it) } ?: RepetitionDetector()
+    val thinkingRepetition = repetitionConfig?.let { RepetitionDetector(it) } ?: RepetitionDetector()
     val pendingToolCalls = mutableListOf<PendingToolCall>() // 流式组装中（未 Ready，不占位）
     var usage: Usage? = null
     var responseModel: String? = null
@@ -1067,6 +1148,9 @@ private class StreamTerminated(val error: LLMError) : Exception()
 
 /** idle 超时信号：partial 已 commit、TurnIdleTimeout 已发；段执行转 IdleTimeout 终态。 */
 private object StreamIdleTimedOut : Exception()
+
+/** 复读熔断信号：检测到输出自重复；collect 转不可重试的 Repetition 段失败。 */
+private object StreamRepetition : Exception()
 
 /** executor 违反「永不抛异常」契约的哨兵：Phase 2 并发中传播，外层转 Failed。 */
 private class ToolExecutionException(val toolCall: ContentBlock.ToolCall, val failure: Throwable) :

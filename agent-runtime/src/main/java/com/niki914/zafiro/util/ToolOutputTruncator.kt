@@ -1,6 +1,7 @@
 package com.niki914.zafiro.util
 
 import com.niki914.logging.Logger
+import com.niki914.xposed.api.util.ContextProvider
 import java.io.File
 import kotlin.random.Random
 
@@ -23,7 +24,7 @@ object ToolOutputTruncator {
      * （不导出），调用方无需各自接 ContextProvider。
      */
     fun defaultExportDir(): File? {
-        val context = com.niki914.xposed.api.util.ContextProvider.awaitIfAvailable() ?: return null
+        val context = ContextProvider.awaitIfAvailable() ?: return null
         return File(context.filesDir, EXPORT_DIR_NAME)
     }
 
@@ -151,7 +152,10 @@ object ToolOutputTruncator {
             } else {
                 target.writeText(fullContent, Charsets.UTF_8)
             }
-            Logger.d(LOG_TAG, "tool output exported bytes=${target.length()} path=${target.absolutePath}")
+            Logger.d(
+                LOG_TAG,
+                "tool output exported bytes=${target.length()} path=${target.absolutePath}"
+            )
             target.absolutePath
         } catch (e: Exception) {
             // 导出失败不阻断主链路：截断提示照常返回，只是没有全量文件可回读

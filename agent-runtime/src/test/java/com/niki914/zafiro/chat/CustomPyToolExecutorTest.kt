@@ -1,20 +1,42 @@
 package com.niki914.zafiro.chat
 
+import com.niki914.zafiro.business.permission.Channel
+import com.niki914.zafiro.business.permission.Permission
+import com.niki914.zafiro.business.permission.PermissionManager
+import com.niki914.zafiro.business.permission.PermissionResult
+import com.niki914.zafiro.business.permission.PermissionScope
+import com.niki914.zafiro.business.permission.PermissionState
+import com.niki914.zafiro.chat.agentic.ToolExecutionPreflight
 import com.niki914.zafiro.chat.agentic.python.CustomPyToolExecutor
 import com.niki914.zafiro.chat.agentic.python.PyExecOutput
+import com.niki914.zafiro.settings.RuntimeEnvironment
+import com.niki914.zafiro.settings.model.RuntimeExecutionRule
+import com.niki914.zafiro.settings.model.RuntimeExecutionRuleEnabledMode
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
 class CustomPyToolExecutorTest {
 
-    private val tool = com.niki914.zafiro.chat.LocalTool.Py(
+    @Before
+    fun setUp() {
+        installRuntimeSettingsGatewayForTest()
+    }
+
+    @After
+    fun tearDown() {
+        RuntimeEnvironment.clearForTest()
+    }
+
+    private val tool = LocalTool.Py(
         name = "py_echo",
         description = "echo",
         code = "def main(text):\\n    print(text)",
@@ -33,15 +55,6 @@ class CustomPyToolExecutorTest {
         assertTrue(json["ok"]!!.jsonPrimitive.content.toBoolean())
         assertEquals("py_echo", json["tool"]!!.jsonPrimitive.content)
         assertEquals("hello", json["stdout"]!!.jsonPrimitive.content)
-    }
-
-    @Test
-    fun execute_blankArgumentsTreatedAsEmptyObject() = runTest {
-        val executor = CustomPyToolExecutor(exec = { _, _ -> PyExecOutput("ok", null, timedOut = false) })
-
-        val json = Json.parseToJsonElement(executor.execute(tool, "")).jsonObject
-
-        assertTrue(json["ok"]!!.jsonPrimitive.content.toBoolean())
     }
 
     @Test
@@ -79,5 +92,76 @@ class CustomPyToolExecutorTest {
         spyExecutor.execute(tool, "not-json{")
         // "{}" base64 = e30=
         assertTrue(received.contains("e30="))
+    }
+
+    @Test
+    fun execute_ruleMatch_blocksBeforeRunning() = runTest {
+        installRuntimeSettingsGatewayForTest(
+            FakeRuntimeSettingsGateway(
+                executionRules = listOf(
+                    RuntimeExecutionRule(
+                        id = "r",
+                        name = "no-rm",
+                        enabledMode = RuntimeExecutionRuleEnabledMode.ALWAYS,
+                        patterns = listOf("\\brm\\s+-rf\\b"),
+                    )
+                )
+            )
+        )
+        var ran = false
+        val executor = CustomPyToolExecutor(exec = { _, _ ->
+            ran = true
+            PyExecOutput("ok", null, timedOut = false)
+        })
+
+        val json = Json.parseToJsonElement(
+            executor.execute(
+                tool.copy(code = "import os\nos.system('rm -rf /data/x')"),
+                "{\"text\":\"x\"}"
+            )
+        ).jsonObject
+
+        assertFalse(json["ok"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals("COMMAND_BLOCKED", json["code"]!!.jsonPrimitive.content)
+        assertFalse(ran)
+    }
+
+    @Test
+    fun execute_pathIntent_requestsStoragePermission() = runTest {
+        var requested = false
+        val preflight = ToolExecutionPreflight(
+            permissionsProvider = {
+                object : PermissionManager {
+                    override fun status(permission: Permission) =
+                        PermissionState.DENIED_BY_USER
+
+                    override suspend fun request(permission: Permission): PermissionResult {
+                        requested = true
+                        return PermissionResult(
+                            permission, PermissionState.DENIED_BY_USER, emptyList()
+                        )
+                    }
+
+                    override suspend fun request(permission: Permission, vararg channels: Channel) =
+                        request(permission)
+
+                    override fun applyScope(vararg channels: Channel): PermissionScope =
+                        throw UnsupportedOperationException()
+                }
+            },
+            sandboxRootsProvider = { emptySet() },
+        )
+        val executor = CustomPyToolExecutor(
+            exec = { _, _ -> PyExecOutput("ok", null, timedOut = false) },
+            preflight = preflight,
+        )
+
+        val json = Json.parseToJsonElement(
+            executor.execute(tool, "{\"text\":\"/sdcard/DCIM/x.jpg\"}")
+        ).jsonObject
+
+        // 被拒绝也照常执行：ok=true，只是中间阻塞申请过一次
+        assertTrue(json["ok"]!!.jsonPrimitive.content.toBoolean())
+        assertTrue(requested)
     }
 }

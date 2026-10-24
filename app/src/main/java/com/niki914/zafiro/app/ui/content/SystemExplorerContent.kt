@@ -34,12 +34,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.niki914.libterm.runtime.LibTerm
+import com.niki914.libterm.runtime.Term
 import com.niki914.libterm.runtime.TermResult
 import com.niki914.uikit.infra.liquidScreenTopPadding
 import com.niki914.zafiro.business.permission.Permission
 import com.niki914.zafiro.business.permission.PermissionManager
 import com.niki914.zafiro.business.permission.PermissionState
 import com.niki914.zafiro.service.requireService
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -94,9 +98,18 @@ fun SystemExplorerContent() {
     }
 
     LaunchedEffect(context) {
-        while (true) {
-            shizuku = readShizukuSnapshot(context)
-            delay(4_000L)
+        var term = LibTerm.openShizukuTerm(context)
+        try {
+            while (true) {
+                shizuku = readShizukuSnapshot(term)
+                if (shizuku.status != "Granted") {
+                    withContext(NonCancellable) { term.close() }
+                    term = LibTerm.openShizukuTerm(context)
+                }
+                delay(4_000L)
+            }
+        } finally {
+            withContext(NonCancellable) { term.close() }
         }
     }
 
@@ -171,10 +184,18 @@ fun SystemExplorerContent() {
                             if (!requestingShizuku) {
                                 requestingShizuku = true
                                 scope.launch {
-                                    val manager = requireService<PermissionManager>()
-                                    manager.request(Permission.SHIZUKU)
-                                    shizuku = readShizukuSnapshot(context)
-                                    requestingShizuku = false
+                                    try {
+                                        val manager = requireService<PermissionManager>()
+                                        manager.request(Permission.SHIZUKU)
+                                    } catch (e: Exception) {
+                                        if (e is CancellationException) throw e
+                                        shizuku = ShizukuSnapshot(
+                                            status = PermissionState.FAILED.toUiLabel(),
+                                            identity = e.message ?: e.javaClass.simpleName,
+                                        )
+                                    } finally {
+                                        requestingShizuku = false
+                                    }
                                 }
                             }
                         },
@@ -250,7 +271,7 @@ private fun ProcessCard(process: ProcessSnapshot) {
                 style = MaterialTheme.typography.bodyLarge,
             )
             Text(
-                text = "${formatMemoryKb(process.rssKb)} · PID ${process.pid} · ${process.user}",
+                text = "${formatMemoryKb(process.rssKb)} RSS · PID ${process.pid} · ${process.user}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -258,14 +279,13 @@ private fun ProcessCard(process: ProcessSnapshot) {
     }
 }
 
-private suspend fun readShizukuSnapshot(context: Context): ShizukuSnapshot {
+private suspend fun readShizukuSnapshot(term: Term): ShizukuSnapshot {
     val permissionManager = requireService<PermissionManager>()
     val permissionState = permissionManager.status(Permission.SHIZUKU)
     if (permissionState != PermissionState.GRANTED) {
         return ShizukuSnapshot(status = permissionState.toUiLabel())
     }
 
-    val term = LibTerm.openShizukuTerm(context)
     return try {
         val identity = term.exec("id").stdoutOrNull()?.trim().orEmpty()
         if (identity.isBlank()) {
@@ -290,20 +310,25 @@ private suspend fun readShizukuSnapshot(context: Context): ShizukuSnapshot {
                 .sortedByDescending { it.rssKb }
                 .take(12),
         )
-    } catch (throwable: Throwable) {
+    } catch (throwable: Exception) {
+        if (throwable is CancellationException) throw throwable
         ShizukuSnapshot(
             status = "Granted · shell error",
-            identity = throwable.javaClass.simpleName,
+            identity = throwable.message?.take(200) ?: throwable.javaClass.simpleName,
         )
-    } finally {
-        term.close()
     }
 }
 
 private fun TermResult<com.niki914.libterm.runtime.CommandResult>.stdoutOrNull(): String? {
     return when (this) {
-        is TermResult.Success -> value.stdout.toByteArray().decodeToString()
-        is TermResult.Failure -> null
+        is TermResult.Success -> {
+            check(!value.timedOut && value.exitCode == 0) {
+                value.stderr.toByteArray().decodeToString().trim().take(200)
+                    .ifBlank { "Shell command failed (exit ${value.exitCode})" }
+            }
+            value.stdout.toByteArray().decodeToString()
+        }
+        is TermResult.Failure -> error(failure.toString())
     }
 }
 

@@ -29,6 +29,8 @@ internal fun Conversation.toHomeTurns(): List<HomeChatTurn> =
             images = turn.images.map { it.toHomeImage() },
             files = turn.files.map { it.toHomeFile() },
             blocks = turn.blocks.mapIndexed { blockIndex, block -> block.toHomeBlock(blockIndex) },
+            isCompactedDivider = turn.isCompactedDivider,
+            isCompacting = turn.isCompacting,
         )
     }
 
@@ -55,7 +57,12 @@ internal fun FileRef.toHomeFile(): HomeChatFile =
 
 private fun TurnBlock.toHomeBlock(blockIndex: Int): HomeChatBlock = when (this) {
     is TurnBlock.Text -> HomeChatBlock.Text(text)
-    is TurnBlock.Thinking -> HomeChatBlock.Thinking(id = blockIndex, text = text, isComplete = isComplete)
+    is TurnBlock.Thinking -> HomeChatBlock.Thinking(
+        id = blockIndex,
+        text = text,
+        isComplete = isComplete
+    )
+
     is TurnBlock.Tool -> HomeChatBlock.Tool(invocation.toStatus(outcome))
     is TurnBlock.Failure -> HomeChatBlock.Error(
         message = message,
@@ -99,4 +106,5 @@ private fun TurnFailureCode?.toLlmErrorCode(): LlmErrorCode? = when (this) {
     TurnFailureCode.ToolExecutionFailed -> LlmErrorCode.ToolExecutionFailed
     TurnFailureCode.IdleTimeout -> LlmErrorCode.IdleTimeout
     TurnFailureCode.OutputTruncated -> LlmErrorCode.OutputTruncated
+    TurnFailureCode.Repetition -> LlmErrorCode.Repetition
 }

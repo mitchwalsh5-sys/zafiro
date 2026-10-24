@@ -23,8 +23,8 @@ android {
         applicationId = "com.niki914.zafiro"
         minSdk = 26
         targetSdk = 34
-        versionName = "1.5.3"
-        versionCode = 14
+        versionName = "1.8.1"
+        versionCode = 15
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
@@ -111,7 +111,7 @@ dependencies {
     compileOnly("de.robv.android.xposed:api:82")
 
     // Third-party UI
-    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.37.0")
+    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.41.0")
 
     // Material & AndroidX
     implementation("com.google.android.material:material:1.12.0")
@@ -124,6 +124,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core:1.7.8")
     implementation("androidx.compose.material:material-icons-extended:1.7.8")
     debugImplementation("androidx.compose.ui:ui-tooling:1.4.0")
+    debugImplementation("com.squareup.leakcanary:leakcanary-android:2.14")
     implementation("androidx.compose.ui:ui-tooling-preview-android:1.8.3")
 
     testImplementation("junit:junit:4.13.2")
@@ -172,6 +173,27 @@ val adbReverse = tasks.register("adbReverse") {
     }
 }
 
+val adbForward = tasks.register("adbForward") {
+    group = "custom"
+    description = "Execute adb forward for port 879x"
+
+    doLast {
+        val adbPath = getAdbPath()
+        println("Using ADB path: $adbPath")
+        try {
+            listOf("8791", "8792").forEach { port ->
+                ProcessBuilder(adbPath, "forward", "tcp:$port", "tcp:$port")
+                    .inheritIO()
+                    .start()
+                    .waitFor()
+            }
+            println("ADB forward successful.")
+        } catch (e: Exception) {
+            println("Failed to execute adb forward: ${e.message}")
+        }
+    }
+}
+
 // 注册启动 Python Server 任务
 val startServer = tasks.register("startServer") {
     group = "custom"
@@ -211,7 +233,8 @@ val startServer = tasks.register("startServer") {
 tasks.configureEach {
     // 只要是执行安装或者构建，就尝试运行这两个任务
     if (name.startsWith("install") || name.startsWith("assemble")) {
-        dependsOn(adbReverse)
+        dependsOn(adbForward)
+//        dependsOn(adbReverse)
 //        dependsOn(startServer)
     }
 }

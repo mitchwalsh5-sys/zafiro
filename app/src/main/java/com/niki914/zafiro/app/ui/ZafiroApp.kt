@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -16,24 +17,21 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreHoriz
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -45,18 +43,26 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import com.niki914.uikit.base.BaseTheme
+import com.niki914.uikit.infra.LiquidMenuItem
+import com.niki914.uikit.infra.LiquidPopover
 import com.niki914.uikit.infra.LiquidScreen
 import com.niki914.uikit.infra.LiquidScreenSwipeContent
+import com.niki914.uikit.infra.LiquidScreenTitle
+import com.niki914.uikit.infra.PopoverAlignment
 import com.niki914.uikit.infra.TitleDirection
 import com.niki914.uikit.infra.nav.LocalNavigationEntry
 import com.niki914.uikit.infra.nav.LocalPageTitle
 import com.niki914.uikit.infra.nav.rememberNavigationController
 import com.niki914.uikit.infra.rememberLiquidScreenState
 import com.niki914.zafiro.app.R
+import com.niki914.zafiro.app.crash.CrashRecorder
+import com.niki914.zafiro.app.crash.CrashReport
+import com.niki914.zafiro.app.crash.CrashReportDialog
+import com.niki914.zafiro.app.ui.content.LocalMarkdownScale
 import com.niki914.zafiro.app.ui.model.AppLaunchDecision
-import com.niki914.zafiro.app.ui.model.home.HomeChatViewModel
 import com.niki914.zafiro.app.ui.model.StartupAssistantUi
 import com.niki914.zafiro.app.ui.model.ThemeController
+import com.niki914.zafiro.app.ui.model.home.HomeChatViewModel
 import com.niki914.zafiro.app.ui.nav.HomePage
 import com.niki914.zafiro.app.ui.nav.NoTitle
 import com.niki914.zafiro.app.ui.nav.PageTitleSpec
@@ -65,6 +71,11 @@ import com.niki914.zafiro.app.ui.nav.TextTitle
 import com.niki914.zafiro.app.ui.nav.TitleBarMode
 import com.niki914.zafiro.app.ui.nav.TopBarActionSpec
 import com.niki914.zafiro.app.ui.nav.ZafiroPage
+import com.niki914.zafiro.business.application.ApplicationService
+import com.niki914.zafiro.repo.XRepo
+import com.niki914.zafiro.service.findService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ZafiroApp(
@@ -76,24 +87,50 @@ fun ZafiroApp(
     val activity = context as? Activity
     val systemDarkTheme = isSystemInDarkTheme()
     val themePrefs = ThemeController.prefs
+    val markdownScale by XRepo.markdownScaleSetting.collectAsState()
     val isDarkTheme = themePrefs.resolveDarkTheme(systemDarkTheme)
     val actionIconTint = if (isDarkTheme) Color.White else Color.Black
     val rootBackToHomeWindowMillis = 2_000L
     val rootBackToHomeHint = stringResource(R.string.ui_root_back_to_home_hint)
     val pageChromeHost = rememberPageChromeHost()
     var chromeMenuExpanded by remember { mutableStateOf(false) }
+    var rightButtonBounds by remember { mutableStateOf<Rect?>(null) }
     var lastRootBackPressedAt by remember { mutableStateOf(0L) }
     var isPageTransitioning by remember { mutableStateOf(false) }
+    var pendingCrashReport by remember { mutableStateOf<CrashReport?>(null) }
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            CrashRecorder.peekPendingCrash(context)
+        }?.let { report ->
+            pendingCrashReport = report
+        }
+    }
     var selectedConversationId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        findService<ApplicationService>()?.conversationSwitchRequests?.collect { convId ->
+            selectedConversationId = convId
+        }
+    }
     var activeConversationId by remember { mutableStateOf<String?>(null) }
-    var activeConversationTitle by remember { mutableStateOf<String?>(null) }
     val initialPage = launchDecision.initialPage
     val controller = rememberNavigationController<ZafiroPage>(initialPage = initialPage)
     val navigator = controller.navigator
     val saveableStateHolder = rememberSaveableStateHolder()
+
+    LaunchedEffect(controller.stack) {
+        val activeIds = controller.stack.map { it.id }.toSet()
+        pageChromeHost.syncWithStack(activeIds)
+    }
+
     val currentEntry = controller.currentEntry
     val currentPage = currentEntry.page
     val currentChrome = pageChromeHost.stateFor(currentEntry.id)
+    val isChromeMenuOpen = chromeMenuExpanded && currentChrome.menuItems.isNotEmpty()
+    val rightButtonAlpha by animateFloatAsState(
+        targetValue = if (isChromeMenuOpen) 0f else 1f,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        label = "rightButtonAlpha",
+    )
     val currentLeftAction = currentChrome.leftAction ?: currentPage.leftAction
     val latestCurrentChrome by rememberUpdatedState(currentChrome)
     fun closeChromeMenu() {
@@ -112,10 +149,10 @@ fun ZafiroApp(
         chrome = currentChrome,
         onOpenChromeMenu = ::openChromeMenu,
     )
-    val showLeftButton =
-        currentLeftAction != null && (currentLeftAction.onClick != null || controller.canGoBack)
-    val showRightButton = currentRightAction != null
-    val currentTitle = resolveTitle(currentChrome.titleSpec ?: currentPage.titleSpec)
+    val showLeftButton = currentChrome.actionsVisible &&
+            currentLeftAction != null && (currentLeftAction.onClick != null || controller.canGoBack)
+    val showRightButton = currentChrome.actionsVisible && currentRightAction != null
+    val currentTitle = resolveScreenTitle(currentChrome, currentPage, currentEntry.id)
     val isTitleCollapsible = currentPage.titleMode == TitleBarMode.Collapsible
     val screenState = rememberLiquidScreenState(
         title = currentTitle,
@@ -182,13 +219,20 @@ fun ZafiroApp(
         homeViewModel.deleteConversationNow(id)
         if (activeConversationId == id) {
             activeConversationId = null
-            activeConversationTitle = null
         }
     }
 
     BackHandler(enabled = true) {
         requestBack()
     }
+
+    val onLeftClick = bindAction(currentLeftAction, fallback = ::requestBack)
+    val onRightClick = bindAction(currentRightAction)
+
+    // 上次已做过标题动画的条目：标题滑动只表达「换了页面」这一空间语义。
+    // 同一条目内的标题刷新（会话标题出现、选中数量变化、切换配置）是活内容变了，
+    // 不是位移，走 update 瞬切；否则它们会沿用上一次的导航方向反复左右滑。
+    var lastAnimatedEntryId by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(
         currentEntry.id,
@@ -198,14 +242,18 @@ fun ZafiroApp(
         currentRightAction,
         currentChrome.menuItems,
         currentChrome.backHandler,
+        currentChrome.actionsVisible,
     ) {
         if (currentChrome.menuItems.isEmpty()) {
             closeChromeMenu()
         }
-        val onLeftClick = bindAction(currentLeftAction, fallback = ::requestBack)
-        val onRightClick = bindAction(currentRightAction)
 
-        when (controller.lastDirection) {
+        val isPageChange = lastAnimatedEntryId != currentEntry.id
+        lastAnimatedEntryId = currentEntry.id
+        val titleDirection =
+            if (isPageChange) controller.lastDirection else TitleDirection.None
+
+        when (titleDirection) {
             TitleDirection.Forward -> screenState.navigateForward(
                 title = currentTitle,
                 isTitleCollapsible = isTitleCollapsible,
@@ -246,131 +294,139 @@ fun ZafiroApp(
             dynamicColor = themePrefs.seedColor == null,
             seedColor = seedColor,
         ) {
-            LiquidScreen(
-                state = screenState,
-                // 折叠信号载体归属当前导航条目，由 LiquidScreen 经 nestedScroll 自动写入；
-                // 条目存活期保留，导航切页同帧隔离，返回时首帧恢复离开前状态。
-                titleBarScroll = currentEntry.titleBarScroll,
-                actionsEnabled = !isPageTransitioning,
-                leftButton = currentLeftAction?.let { action ->
-                    {
-                        AnimatedContent(
-                            targetState = action.icon,
-                            transitionSpec = {
-                                val iconAnimationSpec = tween<Float>(
-                                    durationMillis = 280,
-                                    easing = FastOutSlowInEasing,
-                                )
-                                (scaleIn(
-                                    initialScale = 1.18f,
-                                    animationSpec = iconAnimationSpec,
-                                ) + fadeIn(animationSpec = iconAnimationSpec)).togetherWith(
-                                    scaleOut(
-                                        targetScale = 0.78f,
-                                        animationSpec = iconAnimationSpec,
-                                    ) + fadeOut(animationSpec = iconAnimationSpec)
-                                )
-                            },
-                            label = "leftActionIcon",
-                        ) { imageVector ->
-                            ActionBarVectorIcon(
-                                imageVector = imageVector,
-                                tint = actionIconTint,
-                            )
-                        }
-                    }
-                },
-                rightButton = currentRightAction?.let { action ->
-                    {
-                        AnimatedContent(
-                            targetState = action.icon,
-                            transitionSpec = {
-                                val iconAnimationSpec = tween<Float>(
-                                    durationMillis = 280,
-                                    easing = FastOutSlowInEasing,
-                                )
-                                (scaleIn(
-                                    initialScale = 1.18f,
-                                    animationSpec = iconAnimationSpec,
-                                ) + fadeIn(animationSpec = iconAnimationSpec)).togetherWith(
-                                    scaleOut(
-                                        targetScale = 0.78f,
-                                        animationSpec = iconAnimationSpec,
-                                    ) + fadeOut(animationSpec = iconAnimationSpec)
-                                )
-                            },
-                            label = "rightActionIcon",
-                        ) { imageVector ->
-                            ActionBarVectorIcon(
-                                imageVector = imageVector,
-                                tint = actionIconTint,
-                            )
-                        }
-                    }
-                },
+            CompositionLocalProvider(
+                LocalMarkdownScale provides markdownScale,
             ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    LiquidScreenSwipeContent(
-                        targetState = currentEntry,
-                        direction = controller.lastDirection,
-                        modifier = Modifier.fillMaxSize(),
-                        onTransitionActiveChanged = { active ->
-                            isPageTransitioning = active
-                        },
-                    ) { entry ->
-                        val pageChromeRegistrar = remember(entry.id, pageChromeHost) {
-                            pageChromeHost.registrarFor(entry.id)
-                        }
-                        CompositionLocalProvider(
-                            LocalNavigationEntry provides entry,
-                            LocalPageChrome provides pageChromeRegistrar,
-                            LocalPageTitle provides resolveTitle(entry.page.titleSpec),
-                        ) {
-                            saveableStateHolder.SaveableStateProvider(entry.id) {
-                                ZafiroPageContent(
-                                    entry = entry,
-                                    startupAssistantUi = startupAssistantUi,
-                                    onPush = ::push,
-                                    onPushFromLeft = ::pushFromLeft,
-                                    onPop = { navigator.pop() },
-                                    onPopMultiple = { navigator.popMultiple(it) },
-                                    onPopToRight = ::popToRight,
-                                    onResetTo = ::resetTo,
-                                    selectedConversationId = selectedConversationId,
-                                    onConversationSelected = { id ->
-                                        selectedConversationId = id
-                                    },
-                                    onConversationSelectionConsumed = { id ->
-                                        if (selectedConversationId == id) {
-                                            selectedConversationId = null
-                                        }
-                                    },
-                                    activeConversationId = activeConversationId,
-                                    activeConversationTitle = activeConversationTitle,
-                                    onActiveConversationChanged = { id, title ->
-                                        activeConversationId = id
-                                        activeConversationTitle = title
-                                    },
-                                    onCurrentConversationDeleted = { id ->
-                                        deleteActiveConversation(id)
-                                    },
+                LiquidScreen(
+                    state = screenState,
+                    // 折叠信号载体归属当前导航条目，由 LiquidScreen 经 nestedScroll 自动写入；
+                    // 条目存活期保留，导航切页同帧隔离，返回时首帧恢复离开前状态。
+                    titleBarScroll = currentEntry.titleBarScroll,
+                    actionsEnabled = !isPageTransitioning,
+                    isOccluded = isChromeMenuOpen || currentChrome.isTitleOccluded,
+                    rightButtonAlpha = rightButtonAlpha,
+                    showLeftButton = showLeftButton,
+                    showRightButton = showRightButton,
+                    onLeftClick = onLeftClick,
+                    onRightClick = onRightClick,
+                    onRightButtonBoundsChanged = { rightButtonBounds = it },
+                    leftButton = currentLeftAction?.let { action ->
+                        {
+                            AnimatedContent(
+                                targetState = action.icon,
+                                transitionSpec = {
+                                    val iconAnimationSpec = tween<Float>(
+                                        durationMillis = 280,
+                                        easing = FastOutSlowInEasing,
+                                    )
+                                    (scaleIn(
+                                        initialScale = 1.18f,
+                                        animationSpec = iconAnimationSpec,
+                                    ) + fadeIn(animationSpec = iconAnimationSpec)).togetherWith(
+                                        scaleOut(
+                                            targetScale = 0.78f,
+                                            animationSpec = iconAnimationSpec,
+                                        ) + fadeOut(animationSpec = iconAnimationSpec)
+                                    )
+                                },
+                                label = "leftActionIcon",
+                            ) { imageVector ->
+                                ActionBarVectorIcon(
+                                    imageVector = imageVector,
+                                    contentDescription = action.contentDescription,
+                                    tint = actionIconTint,
                                 )
                             }
                         }
-                    }
+                    },
+                    rightButton = currentRightAction?.let { action ->
+                        {
+                            AnimatedContent(
+                                targetState = action.icon,
+                                transitionSpec = {
+                                    val iconAnimationSpec = tween<Float>(
+                                        durationMillis = 280,
+                                        easing = FastOutSlowInEasing,
+                                    )
+                                    (scaleIn(
+                                        initialScale = 1.18f,
+                                        animationSpec = iconAnimationSpec,
+                                    ) + fadeIn(animationSpec = iconAnimationSpec)).togetherWith(
+                                        scaleOut(
+                                            targetScale = 0.78f,
+                                            animationSpec = iconAnimationSpec,
+                                        ) + fadeOut(animationSpec = iconAnimationSpec)
+                                    )
+                                },
+                                label = "rightActionIcon",
+                            ) { imageVector ->
+                                ActionBarVectorIcon(
+                                    imageVector = imageVector,
+                                    contentDescription = action.contentDescription,
+                                    tint = actionIconTint,
+                                )
+                            }
+                        }
+                    },
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        LiquidScreenSwipeContent(
+                            targetState = currentEntry,
+                            direction = controller.lastDirection,
+                            modifier = Modifier.fillMaxSize(),
+                            onTransitionActiveChanged = { active ->
+                                isPageTransitioning = active
+                            },
+                        ) { entry ->
+                            val pageChromeRegistrar = remember(entry.id, pageChromeHost) {
+                                pageChromeHost.registrarFor(entry.id)
+                            }
+                            CompositionLocalProvider(
+                                LocalNavigationEntry provides entry,
+                                LocalPageChrome provides pageChromeRegistrar,
+                                LocalPageTitle provides resolveTitle(entry.page.titleSpec),
+                            ) {
+                                saveableStateHolder.SaveableStateProvider(entry.id) {
+                                    ZafiroPageContent(
+                                        entry = entry,
+                                        startupAssistantUi = startupAssistantUi,
+                                        isTopPage = (currentEntry.id == entry.id),
+                                        onPush = ::push,
+                                        onPushFromLeft = ::pushFromLeft,
+                                        onPop = { navigator.pop() },
+                                        onPopMultiple = { navigator.popMultiple(it) },
+                                        onPopToRight = ::popToRight,
+                                        onResetTo = ::resetTo,
+                                        selectedConversationId = selectedConversationId,
+                                        onConversationSelected = { id ->
+                                            selectedConversationId = id
+                                        },
+                                        onConversationSelectionConsumed = { id ->
+                                            if (selectedConversationId == id) {
+                                                selectedConversationId = null
+                                            }
+                                        },
+                                        activeConversationId = activeConversationId,
+                                        onActiveConversationChanged = { id ->
+                                            activeConversationId = id
+                                        },
+                                        onCurrentConversationDeleted = { id ->
+                                            deleteActiveConversation(id)
+                                        },
+                                    )
+                                }
+                            }
+                        }
 
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(top = screenState.actionBarHeight.value, end = 12.dp),
-                    ) {
-                        DropdownMenu(
-                            expanded = chromeMenuExpanded && currentChrome.menuItems.isNotEmpty(),
+                        LiquidPopover(
+                            expanded = isChromeMenuOpen,
                             onDismissRequest = ::closeChromeMenu,
+                            anchorBounds = rightButtonBounds,
+                            alignment = PopoverAlignment.BottomEnd,
                         ) {
                             currentChrome.menuItems.forEach { item ->
-                                DropdownMenuItem(
-                                    text = { Text(item.title) },
+                                LiquidMenuItem(
+                                    title = item.title,
                                     onClick = {
                                         closeChromeMenu()
                                         item.onClick()
@@ -378,12 +434,33 @@ fun ZafiroApp(
                                 )
                             }
                         }
+
+                        pendingCrashReport?.let { report ->
+                            CrashReportDialog(
+                                report = report,
+                                onDismiss = { pendingCrashReport = null },
+                            )
+                        }
                     }
                 }
+                currentChrome.overlay?.invoke()
             }
-            currentChrome.overlay?.invoke()
         }
     }
+}
+
+@Composable
+private fun resolveScreenTitle(
+    chrome: PageChromeContribution,
+    page: ZafiroPage,
+    entryId: String,
+): LiquidScreenTitle {
+    val key = chrome.titleKey ?: entryId
+    chrome.titleContent?.let { return LiquidScreenTitle.Content(content = it, key = key) }
+    return LiquidScreenTitle.Text(
+        value = resolveTitle(chrome.titleSpec ?: page.titleSpec),
+        key = key
+    )
 }
 
 @Composable
@@ -410,7 +487,11 @@ private fun resolveRightAction(
     return when {
         chrome.rightAction != null -> chrome.rightAction
         chrome.menuItems.isNotEmpty() -> baseAction?.copy(onClick = onOpenChromeMenu)
-            ?: TopBarActionSpec(icon = Icons.Default.MoreHoriz, onClick = onOpenChromeMenu)
+            ?: TopBarActionSpec(
+                icon = Icons.Default.MoreHoriz,
+                onClick = onOpenChromeMenu,
+                contentDescription = "More Button",
+            )
 
         else -> baseAction
     }
@@ -419,12 +500,13 @@ private fun resolveRightAction(
 @Composable
 private fun ActionBarVectorIcon(
     imageVector: ImageVector,
+    contentDescription: String?,
     tint: Color,
     size: Dp = 20.dp,
 ) {
     Image(
         painter = rememberVectorPainter(imageVector),
-        contentDescription = null,
+        contentDescription = contentDescription,
         modifier = Modifier.size(size),
         colorFilter = ColorFilter.tint(tint),
     )

@@ -1,7 +1,9 @@
 package com.niki914.zafiro.app.ui.content
 
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.LocalIndication
+import com.kyant.backdrop.Backdrop
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -23,6 +26,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallSplit
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -35,32 +40,35 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -70,22 +78,29 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.mikepenz.markdown.compose.components.MarkdownComponents
+import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.elements.MarkdownCheckBox
 import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.MarkdownTypography
 import com.mikepenz.markdown.model.rememberMarkdownState
 import com.niki914.uikit.base.BaseTheme
 import com.niki914.uikit.infra.ActionBarButton
+import com.niki914.uikit.infra.LiquidGlassPresets
 import com.niki914.uikit.infra.component.LiquidTextField
 import com.niki914.uikit.infra.shape.G2BubbleShape
 import com.niki914.uikit.infra.shape.G2CardShape
 import com.niki914.uikit.infra.shape.G2FieldShape
 import com.niki914.zafiro.app.R
 import com.niki914.zafiro.app.ui.model.home.ActionSource
-import com.niki914.zafiro.app.ui.model.home.MessageActionsDisplay
 import com.niki914.zafiro.app.ui.model.home.HomeChatFile
 import com.niki914.zafiro.app.ui.model.home.HomeChatImage
+import com.niki914.zafiro.app.ui.model.home.MessageActionsDisplay
+import com.niki914.zafiro.app.ui.model.home.formatFileNameMiddleTruncated
 import com.niki914.zafiro.chat.LlmErrorCode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 internal data class AssistantErrorUi(
     val titleRes: Int,
@@ -93,7 +108,11 @@ internal data class AssistantErrorUi(
     val body: String? = null,
 )
 
-internal fun toAssistantErrorUi(message: String?, code: LlmErrorCode?, attempts: Int? = null): AssistantErrorUi {
+internal fun toAssistantErrorUi(
+    message: String?,
+    code: LlmErrorCode?,
+    attempts: Int? = null
+): AssistantErrorUi {
     return when (code) {
         // 配置问题：用户可行动的引导（唯一本地化正文）
         LlmErrorCode.ConfigRequired -> AssistantErrorUi(
@@ -134,6 +153,12 @@ internal fun toAssistantErrorUi(message: String?, code: LlmErrorCode?, attempts:
             bodyRes = R.string.ui_home_error_output_truncated_body,
         )
 
+        // 复读/退化熔断：模型输出陷入重复，框架主动中止。正文告知已中止与应对。
+        LlmErrorCode.Repetition -> AssistantErrorUi(
+            titleRes = R.string.ui_home_error_repetition_title,
+            bodyRes = R.string.ui_home_error_repetition_body,
+        )
+
         // 内部错误（我们的问题 / 未知）：标题分类 + 原始 message 透传，空则兜底
         LlmErrorCode.TurnConflict, LlmErrorCode.HookFailed,
         LlmErrorCode.ToolExecutionFailed, null,
@@ -158,32 +183,37 @@ internal fun toAssistantErrorUi(message: String?): AssistantErrorUi {
     return toAssistantErrorUi(message = message, code = null)
 }
 
-private const val AssistantMarkdownPreviewText = """
-# Zafiro 对话排版
+/** 全局 Markdown 排版缩放比例，默认 1.0f (100%)。由全局或局部 [CompositionLocalProvider] 注入。 */
+val LocalMarkdownScale = compositionLocalOf { 1.0f }
 
-这是一段用于观察正文、标题、引用和表格体感的示例内容。标题不应该再像页面 Hero 一样夸张。
+/** 预览样张：同一句 hello 的多文字变体 + 字符表 + 符号，只做字形展示，不作阅读内容。 */
+internal const val AssistantMarkdownPreviewText = """
+# hello
 
-## 标题层级
+HELLO 你好 こんにちは ПРИВЕТ HOLA 안녕하세요 ALLÔ CIAO
 
-- 一级信息要明显
-- 二级信息要克制
-- 列表和正文尽量共用节奏
+## ＡＢＣ あいう 日月山川
 
-### 表格密度
+- ABCDEFGHIJKLMNOPQRSTUVWXYZ
+- abcdefghijklmnopqrstuvwxyz
+- 0123456789 ! ? . , : ; — … · « » 「 」 『 』
+- あいうえお かきくけこ さしすせそ
+- 天地玄黄 宇宙洪荒 日月盈昃 辰宿列张
 
-| 项目 | 目标 |
-| --- | --- |
-| H1 | 明显但不撑爆聊天流 |
-| H2 | 比正文大一档 |
-| Table | 与正文接近，便于连续阅读 |
+### ▲ ● ■ ◆ ★ ♪ ⚡ ⌘
 
-> 这是一段引用文字，用来确认弱化后的信息层级是否还清楚。
+| A | あ | 永 |
+| --- | --- | --- |
+| B | か | 空 |
+| Γ | さ | 海 |
 
-`inline code`
+> ! ? ¿ ¡ : ; ~ ≈ ≠ ∞ °
+
+`Aa` **Aa** *Aa* あ 永 Ж Ω
 
 ```kotlin
-val answer = "markdown preview"
-println(answer)
+val hello = "hello 你好 こんにちは ПРИВЕТ"
+repeat(8) { print(hello) }
 ```
 """
 
@@ -192,44 +222,82 @@ fun AssistantOutputText(
     text: String,
     modifier: Modifier = Modifier,
 ) {
-    val markdownState = rememberMarkdownState(
-        content = text,
-        immediate = true,
-    )
+    val markdownState = rememberMarkdownState(content = text, retainState = true)
 
     SelectionContainer(modifier = modifier.fillMaxWidth()) {
         Markdown(
             markdownState = markdownState,
             modifier = Modifier.fillMaxWidth(),
             typography = assistantMarkdownTypography(),
+            components = assistantMarkdownComponents(),
         )
     }
 }
 
 @Composable
-private fun assistantMarkdownTypography(): MarkdownTypography {
+private fun assistantMarkdownComponents(): MarkdownComponents = remember {
+    markdownComponents(
+        table = { model ->
+            AssistantMarkdownTable(
+                content = model.content,
+                node = model.node,
+                style = model.typography.table,
+            )
+        },
+        checkbox = { model -> MarkdownCheckBox(model.content, model.node, model.typography.text) },
+    )
+}
+
+@Composable
+private fun assistantMarkdownTypography(
+    scale: Float = LocalMarkdownScale.current,
+): MarkdownTypography {
     val bodyStyle = MaterialTheme.typography.bodyLarge.copy(
-        fontSize = (MaterialTheme.typography.bodyLarge.fontSize.value + 1f).sp,
-        lineHeight = (MaterialTheme.typography.bodyLarge.lineHeight.value + 2f).sp,
+        fontSize = (17f * scale).sp,
+        lineHeight = (26f * scale).sp,
     )
     val codeStyle = bodyStyle.copy(
-        fontSize = 15.sp,
-        lineHeight = 22.sp,
+        fontSize = (15f * scale).sp,
+        lineHeight = (22f * scale).sp,
         fontFamily = FontFamily.Monospace,
     )
     val quoteStyle = bodyStyle.copy(
-        fontSize = 16.sp,
-        lineHeight = 24.sp,
+        fontSize = (16f * scale).sp,
+        lineHeight = (24f * scale).sp,
         fontStyle = FontStyle.Italic,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     return markdownTypography(
-        h1 = bodyStyle.copy(fontSize = 18.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold),
-        h2 = bodyStyle.copy(fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold),
-        h3 = bodyStyle.copy(fontSize = 14.sp, lineHeight = 19.sp, fontWeight = FontWeight.SemiBold),
-        h4 = bodyStyle.copy(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium),
-        h5 = bodyStyle.copy(fontSize = 12.sp, lineHeight = 17.sp, fontWeight = FontWeight.Medium),
-        h6 = bodyStyle.copy(fontSize = 11.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium),
+        h1 = bodyStyle.copy(
+            fontSize = (20f * scale).sp,
+            lineHeight = (26f * scale).sp,
+            fontWeight = FontWeight.SemiBold
+        ),
+        h2 = bodyStyle.copy(
+            fontSize = (18f * scale).sp,
+            lineHeight = (24f * scale).sp,
+            fontWeight = FontWeight.SemiBold
+        ),
+        h3 = bodyStyle.copy(
+            fontSize = (16f * scale).sp,
+            lineHeight = (22f * scale).sp,
+            fontWeight = FontWeight.SemiBold
+        ),
+        h4 = bodyStyle.copy(
+            fontSize = (14.5f * scale).sp,
+            lineHeight = (20f * scale).sp,
+            fontWeight = FontWeight.Medium
+        ),
+        h5 = bodyStyle.copy(
+            fontSize = (13f * scale).sp,
+            lineHeight = (18f * scale).sp,
+            fontWeight = FontWeight.Medium
+        ),
+        h6 = bodyStyle.copy(
+            fontSize = (12f * scale).sp,
+            lineHeight = (16f * scale).sp,
+            fontWeight = FontWeight.Medium
+        ),
         text = bodyStyle,
         code = codeStyle,
         inlineCode = codeStyle,
@@ -238,7 +306,7 @@ private fun assistantMarkdownTypography(): MarkdownTypography {
         ordered = bodyStyle,
         bullet = bodyStyle,
         list = bodyStyle,
-        table = bodyStyle.copy(fontSize = 16.sp, lineHeight = 22.sp),
+        table = bodyStyle.copy(fontSize = (13.5f * scale).sp, lineHeight = (18f * scale).sp),
     )
 }
 
@@ -423,19 +491,15 @@ fun LiquidChatComposer(
     onStopClick: () -> Unit,
     isGenerating: Boolean,
     modifier: Modifier = Modifier,
+    contextProgress: Float? = null,
     pendingImages: List<HomeChatImage> = emptyList(),
     pendingFiles: List<HomeChatFile> = emptyList(),
     onAttachImageClick: () -> Unit = {},
+    backdrop: Backdrop? = null,
 ) {
-    val canSend = !isGenerating &&
-            (value.isNotBlank() || pendingImages.isNotEmpty() || pendingFiles.isNotEmpty())
-    val buttonEnabled = isGenerating || canSend
-    val stopContentDescription = stringResource(R.string.ui_home_stop_content_description)
-    val contentColor = if (buttonEnabled) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-    }
+    // 发送按钮恒亮：无文本点击时触发 Toast 提示，能不能点不靠颜色表达。
+    // contextProgress 为 null（无记账）时不画环。
+    val contentColor = MaterialTheme.colorScheme.primary
 
     // 展开唯一信号源：布局行数。观测到 lineCount > 1 即锁住展开态；
     // expanded 本身改变测量宽度，对称条件会振荡，故回落只看文本清空。
@@ -464,9 +528,7 @@ fun LiquidChatComposer(
             ) {
                 Icon(
                     imageVector = Icons.Default.Add,
-                    contentDescription = stringResource(
-                        R.string.ui_home_add_image_content_description
-                    ),
+                    contentDescription = "Add Button",
                 )
             }
         }
@@ -474,27 +536,37 @@ fun LiquidChatComposer(
 
     @Composable
     fun sendButton() {
+        val progress = contextProgress
+        val ringModifier = if (progress == null) {
+            Modifier
+        } else {
+            val trackColor =
+                MaterialTheme.colorScheme.primary.copy(alpha = CONTEXT_RING_TRACK_ALPHA)
+            val progressColor = MaterialTheme.colorScheme.primary
+            Modifier.drawBehind { drawContextRing(progress, trackColor, progressColor) }
+        }
         CompositionLocalProvider(LocalContentColor provides contentColor) {
             ActionBarButton(
                 onClick = if (isGenerating) onStopClick else onSendClick,
-                enabled = buttonEnabled,
-                modifier = Modifier.offset(x = 6.dp),
+                enabled = true,
+                // 环画在按钮自己的 modifier 上：与按钮同心，跟着 offset 一起走。
+                modifier = Modifier
+                    .offset(x = 6.dp)
+                    .then(ringModifier),
             ) {
                 if (isGenerating) {
                     LoadingIndicator(
                         modifier = Modifier
                             .size(28.dp)
                             .clearAndSetSemantics {
-                                contentDescription = stopContentDescription
+                                contentDescription = "Stop Button"
                             },
                         color = contentColor,
                     )
                 } else {
                     Icon(
                         painter = painterResource(R.drawable.ic_arrow_up),
-                        contentDescription = stringResource(
-                            R.string.ui_home_send_content_description
-                        ),
+                        contentDescription = "Send Button",
                     )
                 }
             }
@@ -503,25 +575,69 @@ fun LiquidChatComposer(
 
     // 唯一 BasicTextField 实例：expandedLayout 只切换容器内部布局，不重建字段
     LiquidTextField(
-            value = value,
-            onValueChange = onValueChange,
-            placeholder = if (expanded) null else stringResource(R.string.ui_home_input_placeholder),
-            enabled = true,
-            singleLine = false,
-            // 紧凑态恒单行；任何换行（wrap 或 \n）立即切展开态
-            maxLines = if (expanded) EXPANDED_MAX_LINES else 1,
-            contentVerticalAlignment = if (expanded) Alignment.Top else Alignment.CenterVertically,
-            minHeight = COMPACT_COMPOSER_MIN_HEIGHT,
-            onTextLayout = onLayout,
-            expandedLayout = expanded,
-            expandedActionsRow = {
-                attachButton()
-                sendButton()
-            },
-            modifier = modifier.fillMaxWidth(),
-            leadingContent = { attachButton() },
-            trailingContent = { sendButton() },
+        value = value,
+        onValueChange = onValueChange,
+        placeholder = if (expanded) null else stringResource(R.string.ui_home_input_placeholder),
+        enabled = true,
+        singleLine = false,
+        // 紧凑态恒单行；任何换行（wrap 或 \n）立即切展开态
+        maxLines = if (expanded) EXPANDED_MAX_LINES else 1,
+        contentVerticalAlignment = if (expanded) Alignment.Top else Alignment.CenterVertically,
+        minHeight = COMPACT_COMPOSER_MIN_HEIGHT,
+        onTextLayout = onLayout,
+        expandedLayout = expanded,
+        expandedActionsRow = {
+            attachButton()
+            sendButton()
+        },
+        backdrop = backdrop,
+        glassStyle = LiquidGlassPresets.ComposerBar,
+        modifier = modifier.fillMaxWidth(),
+        leadingContent = { attachButton() },
+        trailingContent = { sendButton() },
+    )
+}
+
+/** 上下文环底轨的不透明度。 */
+private const val CONTEXT_RING_TRACK_ALPHA = 0.22f
+
+/** 上下文环线宽。 */
+private val ContextRingStroke = 2.dp
+
+/** 发送按钮的圆直径，与 ActionBarButton 的 requiredSize 同口径（sp 换算）。 */
+private val ContextRingButtonDiameter = 48.sp
+
+/**
+ * 在发送按钮边缘画一圈上下文占用环。
+ *
+ * 环的外围严格等于按钮的外围（外径 = 按钮直径）：Stroke 居中对齐向两侧各占 stroke / 2，
+ * 故中心线直径取 [ContextRingButtonDiameter] - stroke，使整个环紧贴并隐没在按钮轮廓内。
+ */
+private fun DrawScope.drawContextRing(progress: Float, trackColor: Color, progressColor: Color) {
+    val stroke = ContextRingStroke.toPx()
+    val arcDiameter = ContextRingButtonDiameter.toPx() - stroke
+    val topLeft = Offset((size.width - arcDiameter) / 2f, (size.height - arcDiameter) / 2f)
+    val ringSize = Size(arcDiameter, arcDiameter)
+    drawArc(
+        color = trackColor,
+        startAngle = 0f,
+        sweepAngle = 360f,
+        useCenter = false,
+        topLeft = topLeft,
+        size = ringSize,
+        style = Stroke(width = stroke),
+    )
+    if (progress > 0f) {
+        drawArc(
+            color = progressColor,
+            startAngle = -90f,
+            sweepAngle = 360f * progress.coerceIn(0f, 1f),
+            useCenter = false,
+            topLeft = topLeft,
+            size = ringSize,
+            style = Stroke(width = stroke, cap = StrokeCap.Round),
         )
+    }
 }
 
 @Composable
@@ -532,6 +648,9 @@ fun TurnActionRow(
     onReGenerate: () -> Unit,
     onFork: () -> Unit,
     onRewind: () -> Unit = {},
+    branchIndex: Int = 1,
+    branchCount: Int = 1,
+    onSwitchBranch: (Int) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val isAgent = source == ActionSource.Agent
@@ -548,38 +667,133 @@ fun TurnActionRow(
         ) {
             ActionButton(
                 icon = Icons.Default.ContentCopy,
-                contentDescription = stringResource(R.string.ui_home_action_copy_content_description),
+                contentDescription = "Copy Icon",
                 onClick = onCopy,
                 iconOnly = iconOnly,
             )
             if (isAgent) {
                 ActionButton(
                     icon = Icons.Default.Refresh,
-                    contentDescription = stringResource(R.string.ui_home_action_regenerate_content_description),
+                    contentDescription = "Regenerate Icon",
                     onClick = onReGenerate,
                     iconOnly = iconOnly,
                 )
                 ActionButton(
                     icon = Icons.AutoMirrored.Filled.CallSplit,
-                    contentDescription = stringResource(R.string.ui_home_action_fork_content_description),
+                    contentDescription = "Fork Icon",
                     onClick = onFork,
                     iconOnly = iconOnly,
                 )
+                // 分支翻页器：挂在 Agent 行、排在 Regenerate/Fork 之后
+                if (branchCount > 1) {
+                    BranchPager(
+                        index = branchIndex,
+                        count = branchCount,
+                        iconOnly = iconOnly,
+                        onSwitchBranch = onSwitchBranch,
+                    )
+                }
             } else {
                 ActionButton(
                     icon = Icons.Default.Refresh,
-                    contentDescription = stringResource(R.string.ui_home_action_regenerate_content_description),
+                    contentDescription = "Regenerate Icon",
                     onClick = onReGenerate,
                     iconOnly = iconOnly,
                 )
                 ActionButton(
                     icon = Icons.Default.Undo,
-                    contentDescription = stringResource(R.string.ui_home_action_rewind_content_description),
+                    contentDescription = "Rewind Icon",
                     onClick = onRewind,
                     iconOnly = iconOnly,
                 )
             }
         }
+    }
+}
+
+/**
+ * 重新生成分支翻页器：‹ n/N ›。
+ * 与相邻按钮同尺寸同颜色、同样无波纹（与 iconOnly 按钮一致）；
+ * 只有一版时不渲染（调用方就不传入）。
+ */
+@Composable
+private fun BranchPager(
+    index: Int,
+    count: Int,
+    iconOnly: Boolean,
+    onSwitchBranch: (Int) -> Unit,
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val enabledColor = colorScheme.onSurfaceVariant.copy(alpha = 0.82f)
+    val disabledColor = colorScheme.onSurfaceVariant.copy(alpha = 0.32f)
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        PagerChevron(
+            icon = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+            contentDescription = "Previous Branch",
+            enabled = index > 1,
+            iconOnly = iconOnly,
+            tint = if (index > 1) enabledColor else disabledColor,
+            onClick = { onSwitchBranch(-1) },
+        )
+        Text(
+            text = "$index/$count",
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+            color = enabledColor,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 6.dp),
+        )
+        PagerChevron(
+            icon = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = "Next Branch",
+            enabled = index < count,
+            iconOnly = iconOnly,
+            tint = if (index < count) enabledColor else disabledColor,
+            onClick = { onSwitchBranch(1) },
+        )
+    }
+}
+
+@Composable
+private fun PagerChevron(
+    icon: ImageVector,
+    contentDescription: String,
+    enabled: Boolean,
+    iconOnly: Boolean,
+    tint: Color,
+    onClick: () -> Unit,
+) {
+    val shape = G2CardShape(14.dp)
+    Box(
+        modifier = Modifier
+            .size(if (iconOnly) 28.dp else 38.dp)
+            .then(
+                if (iconOnly) {
+                    Modifier
+                } else {
+                    Modifier
+                        .clip(shape)
+                        .background(
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                            shape,
+                        )
+                }
+            )
+            .clickable(
+                enabled = enabled,
+                interactionSource = remember { MutableInteractionSource() },
+                // 翻页器无波纹：去掉点击指示，不从头像式图标堆里弹出一块矩形
+                indication = null,
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(if (iconOnly) 16.dp else 20.dp),
+            tint = tint,
+        )
     }
 }
 
@@ -633,7 +847,7 @@ private fun rememberPathBitmap(path: String): ImageBitmap? =
     produceState<ImageBitmap?>(initialValue = null, path) {
         value = withContext(Dispatchers.IO) {
             runCatching {
-                android.graphics.BitmapFactory.decodeFile(path)?.asImageBitmap()
+                BitmapFactory.decodeFile(path)?.asImageBitmap()
             }.getOrNull()
         }
     }.value
@@ -710,7 +924,7 @@ internal fun HomeChatImageCard(
         if (onRemove != null) {
             CardRemoveOverlay(
                 size = size,
-                contentDescription = stringResource(R.string.ui_home_image_remove_content_description),
+                contentDescription = "Remove Image Icon",
                 onRemove = onRemove,
             )
         }
@@ -720,11 +934,8 @@ internal fun HomeChatImageCard(
 /**
  * 单个文件 / 文件夹卡。
  *
- * 形状与图片卡同源（同一个 [G2CardShape] + 同一圆角参数）、纯色底（取 M3 scheme）、
- * 同款顶部 30% 遮罩 + 右上角白色关闭钮，里面只有**纯文件名**（不显示路径）。
- * 文件名是可变长文本，所以宽度给上限、单行省略；尺寸由调用方决定。
- *
- * TODO 打磨 UI
+ * 紧凑态（待发条 60dp）：左上角圆角图标徽章 + 底部居左单行截断文字（加大底部边距）+ 右上角关闭钮。
+ * 展开态（消息气泡 120dp）：左上角 36dp 徽章 + 底部加粗文件名 + 粗粒度分类副标题（多语言）。
  */
 @Composable
 internal fun HomeChatFileCard(
@@ -735,29 +946,81 @@ internal fun HomeChatFileCard(
     modifier: Modifier = Modifier,
 ) {
     val shape = G2CardShape(cornerRadius)
+    val category = file.category
+    val isCompact = size <= 80.dp
+
     Box(
         modifier = modifier
             .size(size)
             .clip(shape)
             .background(MaterialTheme.colorScheme.surfaceVariant),
     ) {
-        // 贴底两行：避开右上角的关闭钮，也避开头部的遮罩
-        Text(
-            text = file.name,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-        )
+        if (isCompact) {
+            // 待发条 60dp：纯图标（无背景容器，尺寸放大至 20dp）+ 底部单行截断文字
+            val displayName = formatFileNameMiddleTruncated(file.name, 11)
+            Icon(
+                imageVector = category.icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 8.dp, top = 8.dp)
+                    .size(20.dp),
+            )
+            Text(
+                text = displayName,
+                fontSize = 9.5.sp,
+                lineHeight = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Clip,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+            )
+        } else {
+            // 消息卡片 120dp：实心图标（30dp）+ 底部 2 行文件名（字号 12sp）+ 粗粒度分类说明（完全展示不截断）
+            val displayName = formatFileNameMiddleTruncated(file.name, 32)
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Icon(
+                    imageVector = category.icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(30.dp),
+                )
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = displayName,
+                        fontSize = 12.sp,
+                        lineHeight = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = stringResource(category.labelRes),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+
         if (onRemove != null) {
             CardRemoveOverlay(
                 size = size,
-                contentDescription = stringResource(
-                    R.string.ui_home_file_remove_content_description,
-                ),
+                contentDescription = "Remove File Icon",
                 onRemove = onRemove,
             )
         }
