@@ -40,6 +40,7 @@ class PromptComposer {
             TASK_COMPLETION_GUIDANCE.takeIf { hasAnyTool(input) },
             TOOL_USE_ENFORCEMENT_GUIDANCE.takeIf { hasAnyTool(input) },
             EXECUTION_RULES_GUIDANCE.takeIf { hasAnyTool(input) },
+            TERMINAL_DIAGNOSTICS_GUIDANCE.takeIf { hasBuiltinTool(input, "terminal") },
             MEMORY_GUIDANCE.takeIf { hasBuiltinTool(input, "memory") },
             SKILLS_GUIDANCE.takeIf { hasBuiltinTool(input, "load_skill") },
         ).joinToString(separator = "\n\n")
@@ -188,6 +189,25 @@ class PromptComposer {
                     "user-configurable in Zafiro settings — not system restrictions. A block means " +
                     "the user declined the action or the rule is too strict; the user can adjust " +
                     "the rule in Zafiro settings. Do not describe blocks as system policy."
+
+        internal const val TERMINAL_DIAGNOSTICS_GUIDANCE =
+            "# Android terminal diagnostics\n" +
+                    "For terminal diagnostics, be concise and plan the smallest read-only probe " +
+                    "that can resolve the current uncertainty. Report material findings, not " +
+                    "a running commentary of every shell command. Stop once the question is answered.\n" +
+                    "Shizuku is normally Android shell identity (uid 2000), NOT root. " +
+                    "Verify identity with id when needed; root-only /proc files, smaps, " +
+                    "kernel interfaces and protected services may be inaccessible. " +
+                    "On permission denied, stop retrying that interface and use accessible " +
+                    "dumpsys, cmd, logcat or /proc alternatives, stating any limits.\n" +
+                    "Reuse an existing terminal session when possible, and check busy/running " +
+                    "status before sending another command. Do not create redundant concurrent " +
+                    "monitors or shell sessions. Poll or close background sessions deliberately.\n" +
+                    "Use lightweight, bounded sampling. Avoid repeated full dumpsys or unfiltered " +
+                    "logcat collection when narrower queries suffice. Distinguish RSS, PSS, " +
+                    "private memory, file cache and zram; avoid double-counting. " +
+                    "Label direct evidence, inference and uncertainty separately. " +
+                    "Do not force-stop apps, clear data or change settings without user approval."
 
         internal const val MEMORY_GUIDANCE =
             "You have persistent memory across sessions. Save durable facts using the memory " +
