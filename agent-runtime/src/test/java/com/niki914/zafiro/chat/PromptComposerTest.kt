@@ -61,6 +61,31 @@ class PromptComposerTest {
         assertTrue(stableIdx < volatileIdx)
     }
 
+
+    @Test
+    fun compose_injectsTerminalDiagnosticsOnlyWhenTerminalToolExists() {
+        val terminal = LocalTool.Builtin(
+            name = "terminal",
+            description = "Run terminal commands",
+            tool = FakeBuiltinTool(name = "terminal"),
+        )
+        val withTerminal = PromptComposer().compose(
+            PromptComposerInput(
+                additionalInstructions = "base",
+                tools = ResolvedTools(builtinTools = listOf(terminal)),
+            )
+        )
+        assertTrue(withTerminal.finalSystemPrompt.contains(PromptComposer.TERMINAL_DIAGNOSTICS_GUIDANCE))
+        assertTrue(withTerminal.finalSystemPrompt.contains("Shizuku"))
+        val withoutTerminal = PromptComposer().compose(
+            PromptComposerInput(
+                additionalInstructions = "base",
+                tools = ResolvedTools(builtinTools = listOf(loadSkillBuiltin())),
+            )
+        )
+        assertFalse(withoutTerminal.finalSystemPrompt.contains(PromptComposer.TERMINAL_DIAGNOSTICS_GUIDANCE))
+    }
+
     // --- Memory section (volatile tier) ---
 
     @Test
