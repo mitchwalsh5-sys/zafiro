@@ -191,18 +191,18 @@ class PromptComposer {
                     "the rule in Zafiro settings. Do not describe blocks as system policy."
 
         internal const val TERMINAL_DIAGNOSTICS_GUIDANCE =
-            "# Android terminal diagnostics\\n" +
+            "# Android terminal diagnostics\n" +
                     "For terminal diagnostics, be concise and plan the smallest read-only probe " +
                     "that can resolve the current uncertainty. Report material findings, not " +
-                    "a running commentary of every shell command. Stop once the question is answered.\\n" +
+                    "a running commentary of every shell command. Stop once the question is answered.\n" +
                     "Shizuku is normally Android shell identity (uid 2000), NOT root. " +
                     "Verify identity with id when needed; root-only /proc files, smaps, " +
                     "kernel interfaces and protected services may be inaccessible. " +
                     "On permission denied, stop retrying that interface and use accessible " +
-                    "dumpsys, cmd, logcat or /proc alternatives, stating any limits.\\n" +
+                    "dumpsys, cmd, logcat or /proc alternatives, stating any limits.\n" +
                     "Reuse an existing terminal session when possible, and check busy/running " +
                     "status before sending another command. Do not create redundant concurrent " +
-                    "monitors or shell sessions. Poll or close background sessions deliberately.\\n" +
+                    "monitors or shell sessions. Poll or close background sessions deliberately.\n" +
                     "Use lightweight, bounded sampling. Avoid repeated full dumpsys or unfiltered " +
                     "logcat collection when narrower queries suffice. Distinguish RSS, PSS, " +
                     "private memory, file cache and zram; avoid double-counting. " +
