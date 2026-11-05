@@ -32,6 +32,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.unit.dp
 import com.niki914.libterm.runtime.LibTerm
 import com.niki914.libterm.runtime.Term
@@ -47,6 +50,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
+import java.util.Date
+import java.text.SimpleDateFormat
 
 private data class SystemSnapshot(
     val device: String,
@@ -68,6 +73,7 @@ private data class ShizukuSnapshot(
     val peakRefreshRate: String = "—",
     val minRefreshRate: String = "—",
     val processes: List<ProcessSnapshot> = emptyList(),
+    val memoryDetail: MemoryDetailSnapshot? = null,
 )
 
 private data class ProcessSnapshot(
@@ -85,31 +91,36 @@ private data class MetricRow(
 @Composable
 fun SystemExplorerContent() {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var snapshot by remember { mutableStateOf(readSystemSnapshot(context)) }
     var shizuku by remember { mutableStateOf(ShizukuSnapshot()) }
     var requestingShizuku by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(context) {
-        while (true) {
-            snapshot = readSystemSnapshot(context)
-            delay(2_000L)
+    LaunchedEffect(lifecycleOwner, context) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                snapshot = readSystemSnapshot(context)
+                delay(2_000L)
+            }
         }
     }
 
-    LaunchedEffect(context) {
-        var term = LibTerm.openShizukuTerm(context)
-        try {
-            while (true) {
-                shizuku = readShizukuSnapshot(term)
-                if (shizuku.status != "Granted") {
-                    withContext(NonCancellable) { term.close() }
-                    term = LibTerm.openShizukuTerm(context)
+    LaunchedEffect(lifecycleOwner, context) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            var term = LibTerm.openShizukuTerm(context)
+            try {
+                while (true) {
+                    shizuku = readShizukuSnapshot(term)
+                    if (shizuku.status != "Granted") {
+                        withContext(NonCancellable) { term.close() }
+                        term = LibTerm.openShizukuTerm(context)
+                    }
+                    delay(4_000L)
                 }
-                delay(4_000L)
+            } finally {
+                withContext(NonCancellable) { term.close() }
             }
-        } finally {
-            withContext(NonCancellable) { term.close() }
         }
     }
 
@@ -208,6 +219,18 @@ fun SystemExplorerContent() {
             }
         }
 
+        shizuku.memoryDetail?.let { detail ->
+            item {
+                Text(
+                    text = "MEMORY & LOAD · ${formatTime(detail.sampledAtMs)}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                )
+            }
+            items(memoryDetailRows(detail)) { row -> MetricCard(row) }
+        }
+
         item {
             Text(
                 text = "TOP RAM PROCESSES",
@@ -301,6 +324,12 @@ private suspend fun readShizukuSnapshot(term: Term): ShizukuSnapshot {
             "ps -A -o USER,PID,PPID,RSS,NAME"
         ).stdoutOrNull().orEmpty()
 
+        val memoryOutput = term.exec(
+            "grep -E '^(SwapTotal|SwapFree):' /proc/meminfo; " +
+                "echo '__VM__'; grep -E '^(pswpin|pswpout|pgmajfault) ' /proc/vmstat; " +
+                "echo '__LOAD__'; cat /proc/loadavg"
+        ).stdoutOrNull().orEmpty()
+
         ShizukuSnapshot(
             status = "Granted",
             identity = identity.compactIdentity(),
@@ -309,6 +338,7 @@ private suspend fun readShizukuSnapshot(term: Term): ShizukuSnapshot {
             processes = parseProcesses(processOutput)
                 .sortedByDescending { it.rssKb }
                 .take(12),
+            memoryDetail = MemoryDetailParser.parse(memoryOutput),
         )
     } catch (throwable: Exception) {
         if (throwable is CancellationException) throw throwable
@@ -454,6 +484,32 @@ private fun formatMemoryKb(kb: Long): String {
         String.format(Locale.US, "%.0f MB", kb / 1024.0)
     }
 }
+
+private fun memoryDetailRows(detail: MemoryDetailSnapshot): List<MetricRow> {
+    val swapPercent = if (detail.swapTotalKb > 0L) {
+        detail.swapUsedKb * 100L / detail.swapTotalKb
+    } else 0L
+    return listOf(
+        MetricRow("Swap used (current)", "${formatMemoryKb(detail.swapUsedKb)} / ${formatMemoryKb(detail.swapTotalKb)} · ${swapPercent}%"),
+        MetricRow("Swap in (since boot)", formatMemoryKb(detail.swapInKb)),
+        MetricRow("Swap out (since boot)", formatMemoryKb(detail.swapOutKb)),
+        MetricRow("Major faults (since boot)", formatCount(detail.majorFaults)),
+        MetricRow(
+            "Load avg (1/5/15 min)",
+            String.format(Locale.US, "%.2f / %.2f / %.2f", detail.load1m, detail.load5m, detail.load15m),
+        ),
+        MetricRow("Tasks runnable/total", "${detail.runningTasks} / ${detail.totalTasks}"),
+    )
+}
+
+private fun formatCount(value: Long): String = when {
+    value >= 1_000_000L -> String.format(Locale.US, "%.1f M", value / 1_000_000.0)
+    value >= 1_000L -> String.format(Locale.US, "%.1f K", value / 1_000.0)
+    else -> value.toString()
+}
+
+private fun formatTime(milliseconds: Long): String =
+    SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(milliseconds))
 
 private fun formatDuration(milliseconds: Long): String {
     val totalMinutes = milliseconds / 60_000L
